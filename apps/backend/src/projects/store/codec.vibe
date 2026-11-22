@@ -208,14 +208,18 @@ function updatePhase(rows: ProjectRows) {
   return { update, updateApplicant: idOf(row.applicant_github_id), updateBase: row.expected_revision ?? 0 }
 }
 
+// spec/backend/projects.md: an appended repository counts from the month its entry names (`countsFrom`, the next UTC
+// month for an owner's append, any month for an administrator's); an entry without one counts from the month after
+// the revision that listed it.
 function startsOf(revisions: ReadonlyArray<Revisioned>) {
   const starts: Array<{ repositoryId: number; month: number }> = []
   for (const entry of revisions) {
-    for (const repositoryId of repositoryIdsOf(entry.manifest)) {
-      if (starts.some((start) => start.repositoryId === repositoryId)) continue
+    repositoryIdsOf(entry.manifest).forEach((repositoryId, index) => {
+      if (starts.some((start) => start.repositoryId === repositoryId)) return
       const created = monthOf(entry.row.created_at)
-      starts.push({ repositoryId, month: starts.length === 0 ? created : nextMonth(created) })
-    }
+      const countsFrom = index === 0 ? undefined : entry.manifest.repositories[index]?.countsFrom
+      starts.push({ repositoryId, month: starts.length === 0 ? created : countsFrom === undefined ? nextMonth(created) : monthOf(countsFrom) })
+    })
   }
   return starts
 }

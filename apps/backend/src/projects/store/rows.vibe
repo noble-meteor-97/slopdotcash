@@ -49,6 +49,7 @@ export schema ManifestRepository {
   integrationBranch?: string
   githubId?: string
   nodeId?: string
+  countsFrom?: string
 }
 
 export schema StewardGithub { actorId: string; nodeId: string; login: string }

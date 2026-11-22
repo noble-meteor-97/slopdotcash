@@ -3,7 +3,7 @@ import { type Actor, Refused, admission, handleRaw, json, sameOriginWrite, stric
 import { Roles } from "@repo/platform/roles"
 import { Conflict } from "@repo/platform/stored"
 import { type DecisionRole, EnforcementRecord, EnforcementRows, type RecordDetails, type ReinstatementRead } from "@repo/ports/security"
-import { type Event as AccessEvent, independentOf, latestRecord } from "../../../gen/backend__access.effect.vibe"
+import { type Event as AccessEvent, type ProjectRequestRead, independentOf, latestRecord } from "../../../gen/backend__access.effect.vibe"
 import { type Event, type Registry, apply, canReinstate } from "../../../gen/backend__projectComposition.effect.vibe"
 import { allFreshAtPin, pinsComplete, platform } from "../../../gen/security__enforcement.effect.vibe"
 import { AccessRoutes, projectContract } from "../../access/routes.vibe"
@@ -164,17 +164,20 @@ effect function accountPlan(request: Request, row: ProjectRow, registry: Registr
   const project = access.numbers.get(request.projectId) ?? 0
   const state = access.state
   const context = { actor: { githubId: request.actor.githubId, login: request.actor.login }, reason: request.reason, evidenceReference: request.evidenceReference, moderators: try moderators() }
+  // spec/backend/access.md: the project request is read from the project's enforcement record, the same history the
+  // journal replay reads; while it is open it stands for each selected account's own appeal.
+  const projectRequest: ProjectRequestRead = projectAppeal(access, request.projectId) === "requested" ? "ProjectRequestOpen" : "NoProjectRequest"
   if (request.action === "reinstate_accounts") {
     if (request.accounts.length === 0) throw refused(decisionRows.invalidRequestSelectTheAccountsTo)
     for (const account of request.accounts) {
       if (!bannedIn(access, request.projectId, account.githubId)) throw refused(decisionRows.accountNotBanned)
-      if (!openAccountAppealsOf(state, project).some((appeal) => appeal.target === Number(account.githubId))) throw refused(decisionRows.noOpenAppealAccount)
+      if (projectRequest === "NoProjectRequest" && !openAccountAppealsOf(state, project).some((appeal) => appeal.target === Number(account.githubId))) throw refused(decisionRows.noOpenAppealAccount)
       if (!independentOf(state, by, project, Number(account.githubId))) throw refused(decisionRows.independentReviewRequiredAccount)
     }
-    const event: AccessEvent = { type: "reinstateAccounts", decision: access.nextDecision, project, targets: request.accounts.map((account) => Number(account.githubId)) }
+    const event: AccessEvent = { type: "reinstateAccounts", decision: access.nextDecision, project, targets: request.accounts.map((account) => Number(account.githubId)), projectRequest }
     const after = try dryRun(access, event, by)
     const open = openAccountAppealsOf(after, project).length > 0
-    const kept = projectAppeal(access, request.projectId) === "requested"
+    const kept = projectRequest === "ProjectRequestOpen"
     const preview = accountPreview(request, name, registry, access, open || kept ? "requested" : "granted", request.accounts)
     return { kind: "access", preview, event, by, context } satisfies Plan
   }
@@ -186,7 +189,7 @@ effect function accountPlan(request: Request, row: ProjectRow, registry: Registr
     const open = openAccountAppealsOf(state, project)
     if (open.length === 0) throw refused(decisionRows.noOpenAppeal)
     if (!open.every((appeal) => independentOf(state, by, project, appeal.target))) throw refused(decisionRows.independentReviewRequiredAccount)
-    const event: AccessEvent = { type: "denyAppeal", project, decision: access.nextDecision }
+    const event: AccessEvent = { type: "denyAppeal", project, decision: access.nextDecision, projectRequest }
     try dryRun(access, event, by)
     const preview = accountPreview(request, name, registry, access, "denied", [])
     return { kind: "access", preview, event, by, context } satisfies Plan

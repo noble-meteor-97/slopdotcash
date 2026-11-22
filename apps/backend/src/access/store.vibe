@@ -3,7 +3,7 @@ import { isoNow } from "@repo/platform/clock"
 import { randomId } from "@repo/platform/crypto"
 import { RowMismatch, type Statement, decoded, sql } from "@repo/platform/d1"
 import { type Decision, type Rows, load, update } from "@repo/platform/stored"
-import { type Access, type BanAppeal, type Event, apply, decodeEvent, initial, latestRecord, vettingService } from "../../gen/backend__access.effect.vibe"
+import { type Access, type BanAppeal, type Event, type ProjectRequestRead, apply, decodeEvent, initial, latestRecord, vettingService } from "../../gen/backend__access.effect.vibe"
 import { type HistoryRow, effectiveAppeal, foldRestriction, openAccountAppeal, openProjectAppeals, unreleasedBans } from "../projects/enforcement/reducers.vibe"
 import { AccessJournal, type AccountAction, JournalRow } from "@repo/ports/security"
 
@@ -107,6 +107,13 @@ interface Journal {
   readonly history: Pick<Loaded, "journal" | "bans" | "releases">
 }
 
+// spec/backend/access.md, "One moderator decision reinstates selected accounts, each on its own appeal or the project's
+// open request": the project request is the enforcement record's read, here the project appeal the record's history
+// leaves open just before this record.
+function projectRequestAt(journal: Journal, row: JournalRow): ProjectRequestRead {
+  return openProjectAppeals(historyOf(journal.history, row.project_id, row.sequence), false, row.sequence).length > 0 ? "ProjectRequestOpen" : "NoProjectRequest"
+}
+
 effect function sentFor(state: Access, journal: Journal, row: JournalRow, project: number) {
   const actor = numberOf(row.actor_github_id)
   const decision = decisionOf(row.row)
@@ -120,9 +127,9 @@ effect function sentFor(state: Access, journal: Journal, row: JournalRow, projec
   // One account appeal per project covers every unreleased ban of the account there; a request while one is open,
   // or by an account without an unreleased ban there, records no account appeal.
   if (row.action === "request_reinstatement" && row.actor_role === "banned-account") return accountAppealable(state, project, actor) ? [{ event: { type: "appeal", project }, by: actor }] satisfies ReadonlyArray<Sent> : [] satisfies ReadonlyArray<Sent>
-  if (row.action === "reinstate_accounts") return [{ event: { type: "reinstateAccounts", decision, project, targets: [...new Set((journal.releases.get(row.id) ?? []).map((release) => numberOf(release.github_id)))] }, by: actor }] satisfies ReadonlyArray<Sent>
-  if (row.action === "deny_reinstatement" && row.actor_role === "project-moderator" && openProjectAppeals(historyOf(journal.history, row.project_id, row.sequence), false, row.sequence).length === 0) {
-    return openAccountAppealsOf(state, project).length > 0 ? [{ event: { type: "denyAppeal", project, decision }, by: actor }] satisfies ReadonlyArray<Sent> : [] satisfies ReadonlyArray<Sent>
+  if (row.action === "reinstate_accounts") return [{ event: { type: "reinstateAccounts", decision, project, targets: [...new Set((journal.releases.get(row.id) ?? []).map((release) => numberOf(release.github_id)))], projectRequest: projectRequestAt(journal, row) }, by: actor }] satisfies ReadonlyArray<Sent>
+  if (row.action === "deny_reinstatement" && row.actor_role === "project-moderator" && projectRequestAt(journal, row) === "NoProjectRequest") {
+    return openAccountAppealsOf(state, project).length > 0 ? [{ event: { type: "denyAppeal", project, decision, projectRequest: "NoProjectRequest" }, by: actor }] satisfies ReadonlyArray<Sent> : [] satisfies ReadonlyArray<Sent>
   }
   return [] satisfies ReadonlyArray<Sent>
 }

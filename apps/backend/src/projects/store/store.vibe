@@ -5,9 +5,9 @@ import { type ConstraintViolation, type Statement, sql } from "@repo/platform/d1
 import { Roles } from "@repo/platform/roles"
 import { type Decision, type Rows, load, update } from "@repo/platform/stored"
 import { Notices } from "@repo/ports/operations"
-import { type Event, type Registry, type RegistryRead, apply, decodeEvent, decodeState } from "../../../gen/backend__projectComposition.effect.vibe"
+import { type Event, type Registry, type RegistryObservation, type RegistryRead, apply, decodeEvent, decodeState, initial } from "../../../gen/backend__projectComposition.effect.vibe"
 import { registryReadOf, repositoryClaim } from "../../projectRegistry/claims.vibe"
-import { type ProjectFacts, assetKeyIn, assetOf, byOf, exclusionsOf, fieldsCompleteOf, fundedOf, idOf, licenseOf, mismatchOf, monthOf, networkOf, participationOf, projectState, repositoryIdsOf, repositoryKeysOf, rewardPromiseOf, sameExclusions, statusOf, statusText, tierOf, tierText, vaultsOf } from "./codec.vibe"
+import { type ProjectFacts, assetKeyIn, assetOf, byOf, consentOf, exclusionsOf, fieldsCompleteOf, fundedOf, idOf, licenseOf, mismatchOf, monthOf, networkOf, participationOf, projectState, repositoryIdsOf, repositoryKeysOf, rewardPromiseOf, sameExclusions, statusOf, statusText, tierOf, tierText, vaultsOf } from "./codec.vibe"
 import { EnforcementRows, type EnforcementScope, type RegistryMirror } from "@repo/ports/security"
 import { accountStanding } from "./facts.vibe"
 import { type ApplicationRow, type Manifest, type ProjectRows, manifestOf, projectReads, projectRows, projectVersion } from "./rows.vibe"
@@ -33,6 +33,10 @@ export interface Action {
   // The stored revision the action's manifest text was built from; a different revision at the write refuses it, so
   // a revision built on an earlier read never replaces a later one.
   readonly basedOn?: number
+  // spec/backend/projectComposition.md, "Activation needs current clearance and no restriction": the registry
+  // observation the setup check read (`setupRead`); activation is refused unless the registry at the write still
+  // matches it. Without one the loaded registry records no setup read.
+  readonly setupRead?: RegistryObservation
 }
 
 export interface Prospect {
@@ -111,9 +115,13 @@ function appendedKeys(manifest: Manifest, held: ReadonlySet<string>, repository:
 
 // spec/backend/projects.md, "Administrators hold, delist, change the steward or place a project": the exception is the
 // replaced manifest's registry facts, read from the submitted manifest and never from the client. The administrator
-// route builds its event from these facts, and trusted reads them again from the stored revision text.
+// route builds its event from these facts, and trusted reads them again from the stored revision text. The closure
+// consent is the submitted `slopbot.automaticClosure`; the repositories listed after the current ones are the
+// appended ones, each counting from its `countsFrom` month. An appended entry without `countsFrom` carries month -1,
+// which the exception's append check refuses.
 export function exceptionFacts(manifest: Manifest, rows: ProjectRows) {
   const reward = manifest.reward
+  const listed = rows.current?.repositories.length ?? manifest.repositories.length
   return {
     status: statusOf(manifest.status),
     tier: tierOf(manifest.listingTier),
@@ -126,6 +134,8 @@ export function exceptionFacts(manifest: Manifest, rows: ProjectRows) {
     vaults: vaultsOf(manifest),
     reward: rewardPromiseOf(reward),
     license: licenseOf(manifest),
+    consent: consentOf(manifest),
+    appended: manifest.repositories.slice(listed).map((entry) => ({ repositoryId: idOf(entry.githubId), month: entry.countsFrom === undefined ? -1 : monthOf(entry.countsFrom) })),
   }
 }
 
@@ -157,7 +167,11 @@ effect function trusted(rows: ProjectRows, state: Registry, action: Action, pros
   if (event.type === "registerVault") return { ...event, account: try accountStanding({ actor: event.registration.authority.actor, steward }) } satisfies Event
   if (event.type === "adminRevise") {
     const manifest = try submittedOf(projectId, action.revision, event.type)
-    return { ...event, exception: { ...event.exception, ...exceptionFacts(manifest, rows) }, exclusions: [...exclusionsOf(manifest)] } satisfies Event
+    const exception = { ...event.exception, ...exceptionFacts(manifest, rows) }
+    const held = new Set(rows.current === undefined ? [] : repositoryKeysOf(rows.current))
+    const appendReads: RegistryRead[] = []
+    for (const appended of exception.appended) appendReads.push(try registryRead(projectId, appended.repositoryId, appendedKeys(manifest, held, appended.repositoryId)))
+    return { ...event, exception, exclusions: [...exclusionsOf(manifest)], appendReads } satisfies Event
   }
   return event
 }
@@ -170,7 +184,7 @@ effect function loaded(projectId: string, rows: ReadonlyArray<Rows>, action: Act
   const prospective = prospect === undefined ? project : { ...project, repositories: [prospect.repository], starts: [{ repositoryId: prospect.repository, month: facts.month }], network: networkOf(prospect.manifest), asset: assetKeyIn([], assetOf(prospect.manifest).identity) }
   const mirror = mirrorOf(backend)
   const security = try (try EnforcementRows).decode(projectId, rows.slice(3), prospect === undefined ? mirror : { ...mirror, repositoryGithubIds: [String(prospect.repository)] })
-  const state = try decodeState({ project: prospective, security, exclusions: exclusionsOf(backend.current) })
+  const state = try decodeState({ project: prospective, security, exclusions: exclusionsOf(backend.current), setupRead: action?.setupRead ?? initial.setupRead })
   return { rows: backend, state, event: action === undefined ? undefined : try trusted(backend, state, action, prospect) } satisfies Loaded
 }
 
@@ -178,6 +192,7 @@ const claimsGeneration = sql`(SELECT COALESCE(MAX(rowid), 0) FROM project_reposi
 
 function claimsRegistry(event: Event | undefined): boolean {
   if (event?.type === "publishOwnerRevision" || event?.type === "publishUpdate") return event.change.appends.length > 0
+  if (event?.type === "adminRevise") return event.exception.appended.length > 0
   return event?.type === "create" || event?.type === "publishApplication"
 }
 

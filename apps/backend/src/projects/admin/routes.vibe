@@ -1,7 +1,7 @@
 // spec/backend/projects.md, "Administrators hold, delist, change the steward or place a project"; spec/backend/projectComposition.md, "Activation needs current clearance and no restriction, and owner writes need a clear project"
 import { rows, sql } from "@repo/platform/d1"
 import { type Actor, handleRaw, json, sameOriginWrite, strictBody } from "@repo/platform/http"
-import { type Event, Rejected, clearanceOf } from "../../../gen/backend__projectComposition.effect.vibe"
+import { type Event, Rejected, clearanceOf, withExceptionAppends } from "../../../gen/backend__projectComposition.effect.vibe"
 import { projectContract } from "../../access/routes.vibe"
 import { loadAccess } from "../../access/store.vibe"
 import { AdminRevisionRequest, adminManifest, adminProjects } from "../../client/admin.vibe"
@@ -48,18 +48,16 @@ function eventOf(previous: Readonly<Record<string, unknown>>, next: Readonly<Rec
   const classes = classified(previous, next)
   const executable = changed.some((field) => executableFields.includes(field))
   const otherFields = changed.some((field) => !factFields.includes(field) && !executableFields.includes(field) && !classes.financial.includes(field))
+  const facts = exceptionFacts(manifest, loaded.rows)
+  // spec/backend/projectComposition.md: the exception's clearance input is the clearance of the repositories it lists
+  // afterwards, so an appended repository keeps the result paused until it clears. The store reads each appended
+  // repository's registry claim (appendReads) in the write's own read set.
+  const exception = { expectedRevision, reason: 1, ...facts, financial: classes.financial.length > 0, executable, otherFields, clearance: clearanceOf(registry.security) }
   return {
     type: "adminRevise",
-    exception: {
-      expectedRevision,
-      reason: 1,
-      ...exceptionFacts(manifest, loaded.rows),
-      financial: classes.financial.length > 0,
-      executable,
-      otherFields,
-      clearance: clearanceOf(registry.security),
-    },
+    exception: { ...exception, clearance: clearanceOf(withExceptionAppends(exception, registry.security)) },
     exclusions: [...exclusionsOf(manifest)],
+    appendReads: [],
   }
 }
 

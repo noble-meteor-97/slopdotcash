@@ -1,6 +1,6 @@
 // spec/operations/release.md, "Story: Publish under the shared environment lock only while the tested source may still be deployed"; spec/operations/release.md, "Every required check binds the same source and built artifact"; spec/operations/release.md, "Production publishes only the current main head; staging publishes a checked ancestor and never rolls back"; spec/operations/release.md, "Workers publish before the static site, each only when its own release variable is enabled"; spec/operations/release.md, "The static site publishes last and a lost response is reconciled from the provider"; spec/operations/release.md, "Served bytes are verified against the deployment's own source"; spec/operations/rpcRotationRun.md, "A rotation run writes only its own candidate version, and a normal run never writes one"
 import type { WorkerConfig } from "../../../gen/fees__runtime.effect.vibe"
-import { type Environment, type FeeVersion, type FeeVersions, type ListedDeployment, type Service, canBeginPublication, canProveUnpublished, canPublishService, canReconcilePublication, canRefuseRewrite, canSupersede, headAhead, serviceAt } from "../../../gen/operations__release.effect.vibe"
+import { type Environment, type FeeVersion, type FeeVersions, type ListedDeployment, type Service, canBeginPublication, canProveUnpublished, canPublishService, canReconcilePublication, canRefuseInheritance, canRefuseRewrite, canSupersede, headAhead, serviceAt } from "../../../gen/operations__release.effect.vibe"
 import { type ReleaseWrite, mayWrite } from "../../../gen/operations__rpcRotationRun.effect.vibe"
 import { observeLock } from "../../publicationLock/group.vibe"
 import { thisRun } from "../../publicationLock/lock.vibe"
@@ -127,6 +127,26 @@ effect function feeVersionsOf(run: Run, read: FeeVersionsRead) {
   return { latestUpload: try versionOf(read.latestUpload), activeVersions } satisfies FeeVersions
 }
 
+// spec/operations/release.md, "A production fee-converter release keeps the RPC rotation of every active version":
+// with SLOP_FEE_CONVERTER_RELEASE enabled in production, the versions are read once before publication begins, and a
+// read that fails or shows a dropped rotation publishes nothing and refuses the run. Otherwise no read is needed.
+effect function inheritanceChecked(run: Run, target: Target) {
+  const state = try run.state()
+  if (run.environment !== "Production" || !state.fee.variableEnabled) return noFeeVersions
+  const publisher = try Publisher
+  const read = publisher.feeVersions(target) catch () => undefined
+  const versions = read === undefined ? noFeeVersions : try feeVersionsOf(run, read)
+  if (!canRefuseInheritance(state, versions)) return versions
+  try run.send({ type: "refuseInheritance", versions })
+  const lineages = new Set(versions.activeVersions.map((active) => active.rotationLineage))
+  const message = read === undefined
+    ? "Fee-converter deployment or upload history is unavailable."
+    : lineages.size === 1
+      ? "The latest fee-converter upload has a different Robinhood RPC rotation. Reconcile it before publishing."
+      : "Active fee-converter versions have different RPC rotations."
+  return try stop(run, "Refused", message, "abandon")
+}
+
 effect function publishServices(run: Run, heads: Heads, target: Target, branch: string) {
   const publisher = try Publisher
   for (const service of publisher.order) {
@@ -248,8 +268,9 @@ export effect function release(input: ReleaseInput) {
   try run.lock.send({ type: "acquire", id: thisRun }, run.lockBy)
   try heads.observe()
   if ((try settle(run, publisher.order, branch, facts.sha)) === "Superseded") return done
-  if (!canBeginPublication(try run.state())) return try stop(run, "Refused", "Publication cannot begin with this run's data and receipts", "abandon")
-  try run.send({ type: "beginPublication" })
+  const versions = try inheritanceChecked(run, target)
+  if (!canBeginPublication(try run.state(), versions)) return try stop(run, "Refused", "Publication cannot begin with this run's data and receipts", "abandon")
+  try run.send({ type: "beginPublication", versions })
   publisher.prepare(target) catch effect (error) => {
     const state = try run.state()
     const pending = publisher.order.find((service) => serviceAt(state, service).phase === "ServicePending")

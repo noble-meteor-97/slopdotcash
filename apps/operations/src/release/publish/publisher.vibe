@@ -480,8 +480,9 @@ export function publisher(options: PublisherOptions) {
       return try identityClientId(origin)
     }
 
-    effect function feeVersions(target: Target) {
-      try preparedFor(target)
+    // The release reads the fee-converter versions before publication begins as well as at the upload, so this read
+    // needs no prepared publication: it changes nothing and reads only the provider's deployment and upload history.
+    effect function feeVersions(_target: Target) {
       const state = try workerState()
       const latest = try inspectVersion(state.latest.id)
       const activeVersions: FeeVersionRead[] = []

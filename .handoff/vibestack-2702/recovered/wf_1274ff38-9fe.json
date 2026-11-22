@@ -1,0 +1,515 @@
+[
+ {
+  "label": "audit:0",
+  "result": {
+   "items": [
+    {
+     "obligation": "Root admission requires the exact current identity authority (attester) signature; anyone may submit; the owner is not a required signer for admission",
+     "status": "partial",
+     "where": "spec/settlement/escrow.md canAdmitRoot (authorization.signer == e.authority) with canObserveAuthority/observeAuthority: Quint only, simulated; spec/settlement/escrow.proof.dfy holds only money helper lemmas (EscChain..EscSubRight), no admitRoot lemma. spec/contracts/evmEscrow.md canReserveMonthly/canCommitMonthly take an unconstrained `attested: bool` that is never tied to e.identityAuthority, although the rotation actions (proposeIdentityAuthority, cancelIdentityAuthorityRotation, executeIdentityAuthorityRotation, stepAuthorityChanges) are modeled. reserveMonthly_ensures in spec/contracts/evmEscrow.proof.dfy proves invariant preservation but nothing about the signer. Source: packages/contracts/evm/src/ProjectEscrow.sol reserveMonthly line 716 signedBy(monthlyReserveDigest(period, reservation), factory.identityAuthority(), attestation), with an EIP-712 domain that includes chainId and verifyingContract (line 110).",
+     "toAdd": "In spec/contracts/evmEscrow.md, replace `attested: bool` in canReserveMonthly/reserveMonthly (and canCommitMonthly) with `signer: str`. Require `signer != \"\" and signer == e.identityAuthority`; a pending authority is not accepted. Record `signer` on Month. Add the invariant `alwaysAdmittedBySigner(e) = e.vault.months.every(m => m.signer != \"\")`. Add the step rule `stepAdmissionByCurrentAuthority(before, via, after) = (via == \"reserveMonthly\" or via == \"commitMonthly\") implies after.vault.months.nthOr(before.vault.months.length(), noMonth).signer == before.identityAuthority`. Add the law `lawRotatedAuthorityRefuses(e, p, r, s, old) = (canExecuteIdentityAuthorityRotation(e) and old == e.identityAuthority) implies not(canReserveMonthly(executeIdentityAuthorityRotation(e), p, r, s, old))`. Add a matching reserveMonthly_ensures clause and a law lemma in evmEscrow.proof.dfy. State the EIP-712 chainId and vault binding as an adapter assumption in the spec text (evmEscrow models one vault). Add a note that admission has no `by` guard: any caller may submit.",
+     "owner": "spec/contracts/evmEscrow.md (+ evmEscrow.proof.dfy); spec/settlement/escrow.md keeps the abstract signer==authority guard"
+    },
+    {
+     "obligation": "Only the current owner sets the monthly cap/opt-in and pledges months (owner authority over admission policy)",
+     "status": "covered-proved",
+     "where": "spec/contracts/evmEscrow.md canSetMonthlyCommitment (by == e.vault.key.owner, Ordinary, no enabled zero cap), stepMonthlyPolicyByOwner, canPledgeMonths (owner, Ordinary), stepPledgeIrrevocable, alwaysBountyHasNoMonthly. These are proved in spec/contracts/evmEscrow.proof.dfy by setMonthlyCommitment_ensures and reserveMonthly_ensures, which include stepMonthlyPolicyByOwner and stepPledgeIrrevocable, and by the other _ensures lemmas. spec/settlement/escrow.md canSetMonthly is simulated only.",
+     "toAdd": "None for the contract spec. The draft's canSetMonthly is incomplete: it lacks the Ordinary-purpose guard and the pledge interaction. Drop it in favour of evmEscrow.",
+     "owner": "spec/contracts/evmEscrow.md"
+    },
+    {
+     "obligation": "Admission binds the exact current ordinary source sequence; any award recorded since signing (manual commit, leaf materialization, legacy V1 fresh entry) makes the reservation stale (MonthlySourceChanged)",
+     "status": "partial",
+     "where": "spec/contracts/evmEscrow.md canReserveMonthly guard `sequence == e.vault.sourceSequence`. recorded() increments sourceSequence for every Ordinary award, so commitAward, commitMonthly fresh entries and commitMonthlyLeaf all advance it. canCommitAward blocks manual commits while the open-window period has an open pledge (contract PledgedMonthOpen, line 530). spec/settlement/escrow.md canAdmitRoot (EVM branch) and commitAward increment the sequence (Quint, simulated). Service side: spec/settlement/monthlyCommitment.md stale()/canSignEvm re-signs on a sequence change (simulated, no proof file). No `step`/`law` rule states the sequence semantics, and no Dafny lemma concerns it. These are guards only. Source: ProjectEscrow.sol line 709 and recordAward line 844.",
+     "toAdd": "In spec/contracts/evmEscrow.md, add `stepSourceSequenceCountsOrdinaryAwards(before, after) = before.vault.key.purpose == L::Ordinary implies after.vault.sourceSequence == before.vault.sourceSequence + (after.vault.awards.length() - before.vault.awards.length())`, with the else branch keeping it unchanged for Bounty. Add `lawRecordedAwardStalesReservation(e, p, r, s, signer, src, actor, gross) = canReserveMonthly(e, p, r, s, signer) and canCommitAward(e, src, actor, gross, e.vault.key.owner) implies not(canReserveMonthly(commitAward(e, src, actor, gross, e.vault.key.owner), p, r, s, signer))`, plus the same law for commitMonthlyLeaf on another period. Prove both in evmEscrow.proof.dfy as _ensures clauses and a law lemma. Model the uint256 width as an adapter assumption only.",
+     "owner": "spec/contracts/evmEscrow.md (+ evmEscrow.proof.dfy)"
+    },
+    {
+     "obligation": "Admission only inside the period window: opens 72 h after the UTC month ends, closes 72 h after the next month ends; periods 200001..999912",
+     "status": "partial",
+     "where": "spec/contracts/ledger.md validPeriod/opensAt/closesAt/inWindow, lawWindowNonEmpty, lawNextWindowFollows (Quint; ledger.proof.dfy proves only lawPayMovesOneAward, not the window laws). spec/contracts/evmEscrow.md admissionOpen uses L::inWindow (guard only). spec/settlement/escrow.md windowOpen/canAdmitRoot (simulated). spec/settlement/monthlyCommitment.md alwaysWindowFromPeriod and alwaysAttemptsSignedInWindow (simulated). No contract invariant records that an admitted month was admitted inside its window. Source: ProjectEscrow.sol monthlyWindow lines 425-434 and reserveMonthly line 707.",
+     "toAdd": "In spec/contracts/evmEscrow.md, add `alwaysAdmittedInWindow(e) = e.vault.months.every(m => L::inWindow(m.period, m.admittedAt))`, sound because admittedAt is frozen and stepMonthsRetained keeps months. Add the corresponding _ensures clauses for every action, a lemma in evmEscrow.proof.dfy, and Dafny lemmas for ledger lawWindowNonEmpty and lawNextWindowFollows in ledger.proof.dfy. Do not add a temporal property that time alone closes or releases a reserve.",
+     "owner": "spec/contracts/evmEscrow.md (+ proof); window laws in spec/contracts/ledger.md (+ ledger.proof.dfy)"
+    },
+    {
+     "obligation": "Monthly cap: whole gross <= monthlyCapFor(period) = max(enabled ? monthlyCap : 0, open pledge of the period), checked at admission",
+     "status": "covered-proved",
+     "where": "spec/contracts/evmEscrow.md capFor and canReserveMonthly (`reservation.wholeGross <= capFor(e.vault, period)`). Month.cap stores capFor at admission. alwaysMonthsWellFormed (`m.wholeGross <= m.cap`) is proved preserved by reserveMonthly_ensures and commitMonthly_ensures in evmEscrow.proof.dfy. Service side: spec/settlement/monthlyCommitment.md authorize CapExceeded, signingRefusal ChainCapExceeded and alwaysAuthorizedWithinCap (simulated). spec/settlement/escrow.md canAdmitRoot compares only to monthlyCap and has no pledge. That is obsolete against the contract (ProjectEscrow.sol monthlyCapFor lines 627-636).",
+     "toAdd": "None in evmEscrow. spec/settlement/escrow.md should gain the pledge-raised cap (`capFor`) or delegate admission to evmEscrow. In spec/settlement/monthlyCommitment.md, document that ChainView.cap must be the contract's monthlyCapFor(period), pledge included, not the raw monthlyCap.",
+     "owner": "spec/contracts/evmEscrow.md (proved); spec/settlement/escrow.md needs the pledge-aware cap"
+    },
+    {
+     "obligation": "Free-balance coverage: the remainder is debited from free funds once, and after closing the period's own pledge the free balance must still cover every other open pledge (InsufficientFreeBalance / PledgedFunds)",
+     "status": "covered-proved",
+     "where": "spec/contracts/evmEscrow.md canReserveMonthly (`remainingGross <= e.vault.free and remainingGross <= unpledged(closePledge(e.vault, period))`) and reserveMonthly (free -= remainingGross, pendingMonthly += remainingGross, closePledge). alwaysConserved, alwaysBalanceCovers, alwaysNonnegative, alwaysPledgesCovered, alwaysPledgedMonthUnadmitted, alwaysPendingMatchesMonths and stepFreeSpentByOwnerOrAttestation are proved by reserveMonthly_ensures in evmEscrow.proof.dfy. spec/settlement/escrow.md canAdmitRoot checks only `free >= remaining` with no pledges (simulated, obsolete). Source: ProjectEscrow.sol takeFree lines 825-829, reserveMonthly lines 719-723.",
+     "toAdd": "None in evmEscrow. spec/settlement/escrow.md should model openPledged and require `remaining <= free - (openPledged - ownPledge)`, or defer to evmEscrow; the draft must not restate the pledge-free version.",
+     "owner": "spec/contracts/evmEscrow.md (proved)"
+    },
+    {
+     "obligation": "One commitment per period forever (V1 or V2), even after release or opt-out; an existing legacy root blocks V2 admission",
+     "status": "covered-proved",
+     "where": "spec/contracts/evmEscrow.md admissionOpen (`not(hasMonth(e.vault.months, period))`, shared by commitMonthly and reserveMonthly). alwaysMonthsWellFormed (`months.select(o => o.period == m.period).length() == 1`) and stepMonthsRetained are proved by reserveMonthly_ensures and commitMonthly_ensures, with the MonthPeriodUnique and AppendMonth lemmas, in evmEscrow.proof.dfy. spec/settlement/escrow.md stepOneRootPerPeriod and stepMonthsRetained are simulated only. Source: ProjectEscrow.sol monthlyRoots[period] != 0 check, line 708.",
+     "toAdd": "None.",
+     "owner": "spec/contracts/evmEscrow.md"
+    },
+    {
+     "obligation": "Owner opt-out: with commitments off, an unpledged period cannot be admitted, but a pledged period still admits (up to its pledge); opt-out never stops an admitted month's leaves",
+     "status": "covered-proved",
+     "where": "spec/contracts/evmEscrow.md admissionOpen (`e.vault.monthlyEnabled or pledgeOf(e.vault, period).open`), capFor (cap 0 while off), canCommitMonthlyLeaf (no opt-in or window guard), stepMonthlyPolicyByOwner. Preservation is proved via the evmEscrow.proof.dfy _ensures lemmas. Service-side consent: spec/settlement/monthPledges.md (pledge as consent) and spec/settlement/monthlyCommitment.md pledgeWaives/AutomaticOff, sometimesCompletedAfterOptOut (simulated). spec/settlement/escrow.md canAdmitRoot requires monthlyEnabled unconditionally, so it refuses pledged-while-off admissions that the contract accepts. That is obsolete (ProjectEscrow.sol monthlyCapFor lines 627-636).",
+     "toAdd": "Optionally add the reachability witness `sometimesPledgedAdmissionWhileOff(e) = not(e.vault.monthlyEnabled) and e.vault.months.some(m => m.version2 and m.cap > 0)` to evmEscrow. Update spec/settlement/escrow.md canAdmitRoot to `(e.monthlyEnabled or ownPledgeOpen)`.",
+     "owner": "spec/contracts/evmEscrow.md; spec/settlement/escrow.md to align"
+    },
+    {
+     "obligation": "Draft obsolescence for this group (formal/drafts/monthly-reserve.md)",
+     "status": "missing",
+     "where": "formal/drafts/monthly-reserve.md: canAdmitRoot, canSetMonthly, canManual, canRelease/release, the source header and partialRelease/releaseValues",
+     "toAdd": "Bring the draft up to date: (1) The source anchor names `contracts/evm/src/ProjectEscrow.sol` at main ee1a4b2 with stale line ranges. The file is now packages/contracts/evm/src/ProjectEscrow.sol, so re-anchor to the current lines (reserveMonthly 701-746, monthlyCapFor 627-636, takeFree 825-829, monthlyWindow 425-434, recordAward 833-846). (2) canAdmitRoot requires `v.enabledMonthly` and compares wholeGross only to `v.cap`. Both are obsolete: a pledged period admits while off, under max(cap if enabled else 0, pledge). (3) enoughFree ignores open pledges and pledge closure, so it would accept admissions the contract reverts with PledgedFunds. (4) The draft has no pledges, so it lacks closePledge-on-admission and the PledgedMonthOpen guard on manual commits (canManual). (5) Legacy V1 commitMonthly is unmodeled, though it occupies the period and advances the sequence; stepExactSourceSequence wrongly limits sequence changes to manual and materialize. (6) canSetMonthly lacks the Ordinary-purpose guard. (7) Outside this group: canRelease and the partialRelease sample allow a partial or repeated release, which commit 6364cda9a removed. The contract now matches evmEscrow canReleaseMonthlyReserve (whole untouched remainder only). Instead of restating the admission rules, the draft should reuse or import the evmEscrow admission rules and add only what it uniquely owns.",
+     "owner": "formal/drafts/monthly-reserve.md (defer admission to spec/contracts/evmEscrow.md)"
+    }
+   ]
+  }
+ },
+ {
+  "label": "audit:3",
+  "result": {
+   "items": [
+    {
+     "obligation": "Service policy: the attester approves only the whole untouched reserve of a month whose complete retained allocation (every leaf of the admitted root) has the wrong total. The approval needs fresh finalized evidence, the current owner request revision and the pinned release-capable implementation. Missing, healthy, stale, partly settled or already released allocations refuse. The owner signs and submits; the Worker never submits.",
+     "status": "covered-proved",
+     "where": "spec/settlement/reserveRelease.md: canAdmitRetained/admitRetained, canCheck/check, canApprove/approve, canOwnerSign/ownerSign, canFinalize/finalize, canRetireFailedAttempt, canSettlePart; invariants alwaysWholeRelease, alwaysBoundApproval, alwaysNoSettlementOnRelease, alwaysUntouchedBalances, alwaysConserved, alwaysQualifiedAgainstPin, stepSignedAttemptRetained, stepAttemptHistoryRetained. spec/settlement/reserveRelease.proof.dfy proves check_ensures, ownerSign_ensures, finalize_ensures and settlePart_ensures. spec/settlement/signer.md (ReserveReleaseApproval is an IdentityAttester-only operation; ReleaseSubmission is ProjectOwner-only) has no proof file. Implementation: apps/settlement/src/signer/reserveRelease.vibe termsOf/approved and apps/settlement/src/reserveRelease/release.vibe prepareRelease.",
+     "toAdd": "No new rule for the service machine. Its 'stricter than the contract' prose should now say the service is stricter only on wrong total, complete retained evidence, freshness, owner revision and pin. Whole-versus-partial no longer differs, because both contracts are whole-only after commit 6364cda9a. Conformance note: termsOf in reserveRelease.vibe compares the on-chain remaining amount with the service's `reserved` value, not with the on-chain `total`. Untouchedness therefore rests on alwaysUntouchedBalances in the service plus the contract's own `remaining == total` check. State that dependence in reserveRelease.md's evidence-adapter paragraph.",
+     "owner": "spec/settlement/reserveRelease.md"
+    },
+    {
+     "obligation": "EVM contract acceptance (packages/contracts/evm/src/ProjectEscrow.sol releaseMonthlyReserve, lines 782-803). The current owner must call. The current identity authority must sign monthlyReleaseDigest(period, allocationDigest, allocationRoot, remaining, released). It requires remaining == expectedRemaining == total, releasedGross == expectedRemaining > 0, and a V2 month. It sets remaining to 0 and monthlyReleased[period] to the released gross and moves that gross from pending to free, at most once. The period stays committed.",
+     "status": "covered-proved",
+     "where": "spec/contracts/evmEscrow.md section 'The owner releases the whole untouched reserve of a wrong-total period once, with the attester's signature': canReleaseMonthlyReserve and releaseMonthlyReserve. Invariant alwaysMonthsWellFormed ((m.released == 0 or (m.released == m.total and m.committedGross == 0)) and committedGross + released + remaining == total), plus alwaysPendingMatchesMonths, stepMonthsRetained and sometimesWholeReserveReleased. spec/contracts/evmEscrow.proof.dfy proves releaseMonthlyReserve_ensures for all the always/step predicates, including alwaysMonthsWellFormed, alwaysPendingMatchesMonths and stepMonthsRetained.",
+     "toAdd": "No new rule is needed. Optional tightening: the model abstracts the EIP-712 binding as `attested: bool`. Add an adapter note, or a guard over a Digest record { period, allocationDigest, allocationRoot, remaining, released } equal to the month's terms. This shows that a signature over another root or digest is refused. Also add `stepReleaseOnce(before, via, after)`: via == \"releaseMonthlyReserve\" implies the month's released value was 0 before, so 'exactly once' is a named step property and not only implied by alwaysMonthsWellFormed.",
+     "owner": "spec/contracts/evmEscrow.md"
+    },
+    {
+     "obligation": "Solana program acceptance (packages/contracts/solana/programs/slop-escrow/src/lib.rs release_monthly_reserve, lines 683-740). The Ed25519 authority signature covers the root, total, unsettled amount and released amount. It requires committed == 0, released == 0 and unsettled == total == expected, with released == unsettled > 0. It sets committed and released to total, so a later release_monthly_award or commit cannot settle the same gross.",
+     "status": "covered-proved",
+     "where": "spec/contracts/solanaEscrow.md section 'The owner releases the whole untouched reserve of a wrong-total month once, with the attester's signature': canReleaseMonthlyReserve and releaseMonthlyReserve (sets wholeReleased). Invariant alwaysMonthsWellFormed (wholeReleased implies released == total, committed == total and an empty settled list), plus alwaysOutstandingMatchesMonths and stepMonthsRetained. spec/contracts/solanaEscrow.proof.dfy releaseMonthlyReserve_ensures (line 1762) proves them; releaseMonthlyAward_ensures covers the per-leaf path.",
+     "toAdd": "None for acceptance. Optional: add a named law `lawNoLeafAfterWholeRelease(p, period, leaf)`: monthFor(p.months, period).wholeReleased implies not(canReleaseMonthlyAward(p, period, leaf)) and not(canCommitMonthlyAward ...). This makes the 'never returned twice' claim in the prose explicit, not a consequence of committed == total.",
+     "owner": "spec/contracts/solanaEscrow.md"
+    },
+    {
+     "obligation": "Cross-network settlement-level release rule: one rule for both networks, whole untouched remainder only, no committed or released leaf, and the period stays committed.",
+     "status": "covered-simulated",
+     "where": "spec/settlement/escrow.md section 'Only an owner request co-signed by the current authority releases pool gross': canReleaseReserve/releaseReserve, updated by commit 6364cda9a. Its guard is equal(releasedGross, remaining), equal(remaining, admittedGross) and not positive(month.released). Related: stepPoolLeavesOnlyByLeafOrRelease, stepReleaseNeedsUpgrade, alwaysMonths, sometimesReleased. It is lifted into spec/settlement/monthlySettlement.md canReleaseReserve/releaseReserve. spec/settlement/escrow.proof.dfy contains only the limb helper lemmas EscChain..EscSubRight. There is no releaseReserve_ensures, so this is Quint simulation only.",
+     "toAdd": "(1) Separate a whole release from per-leaf release in escrow.md. On Solana, releaseLeaf also adds to MonthReserve.released, so `released` cannot by itself mark a whole release. Add `wholeReleased: bool` to MonthReserve. releaseReserve sets it to true; releaseLeaf and materialize require not(m.wholeReleased). Add invariant `alwaysWholeReleaseExclusive(e) = e.months.every(m => m.wholeReleased implies M::equalAmounts(m.released, m.admittedGross) and M::equalAmounts(m.remaining, M::zero) and not(e.releasedLeaves.some(l => l.period == m.period)) and not(e.awards.some(a => a.origin == PoolLeaf and a.period == m.period)))`. Add step `stepWholeReleaseOnce(before, via, after) = via == \"releaseReserve\" implies not(monthFor(before, p).wholeReleased) and monthFor(after, p).wholeReleased`. (2) Add escrow.proof.dfy lemma releaseReserve_ensures, at least for alwaysGrossConserved, alwaysMonths and alwaysWholeReleaseExclusive. (3) Obsolete prose to fix: 'a later leaf still proves while its gross fits the remainder' (the remainder is now always 0 after release) and 'Committed leaves, awards and fees do not change' (there are never any). (4) The guard requires e.implementation == ReleaseCapable on both networks, but the PreRelease to ReleaseCapable upgrade event is EVM-only. State that a Solana vault deploys ReleaseCapable (in canDeploy/deploy), or scope the upgrade gate to `asset.network != Solana`.",
+     "owner": "spec/settlement/escrow.md (+ escrow.proof.dfy)"
+    },
+    {
+     "obligation": "Composition: an attester-approved, owner-signed service release is exactly a release the contract accepts, and a finalized release receipt matches the contract's resulting state. The approved retained root and reserve bind to the escrow's own admitted month (root, admittedGross, remaining), and the signer is the current authority.",
+     "status": "missing",
+     "where": "spec/settlement/reserveRelease.md defers this explicitly: 'Binding the retained allocation to the escrow's own admitted month (root, admitted gross and remainder) is a composition obligation with escrow accounting.' spec/settlement/monthlySettlement.md wraps E::canReleaseReserve without importing reserveRelease. spec/settlement/composition.md has no release rule.",
+     "toAdd": "In monthlySettlement.md (or composition.md), import RR from ./reserveRelease and add `lawApprovedReleaseAccepted(r: RR::ReserveRelease, e: E::Escrow, period: int, ev: E::ChainEvent)`: (r.phase == RR::Approved or r.phase == RR::OwnerSigned) and E::monthFor(e, period).root == r.root and M::equalAmounts(E::monthFor(e, period).remaining, r.reserved) and E::later(e, ev) implies E::canReleaseReserve(e, { period: period, expectedRemaining: r.reserved, releasedGross: r.reserved, signer: e.authority }, ev, e.owner) or E::monthFor(e, period).remaining != E::monthFor(e, period).admittedGross (the conflicting-settlement case, which the service must then hold). Add `lawFinalizedReleaseMatchesEscrow(r, e, period)`: r.phase == RR::Released implies M::equalAmounts(E::monthFor(e, period).remaining, M::zero) and M::equalAmounts(E::monthFor(e, period).released, r.originalReserve). Add `stepServiceNeverSubmits`: via == \"releaseReserve\" implies by == e.owner, cross-checked against signer.md ReleaseSubmission.",
+     "owner": "spec/settlement/monthlySettlement.md (composition with escrow.md and reserveRelease.md)"
+    },
+    {
+     "obligation": "Both networks: whether the service policy is available on Solana. CLAUDE.md's attester exception is network-neutral and the Solana program accepts whole releases, but the service approval and preparation path is EVM-only.",
+     "status": "partial",
+     "where": "apps/settlement/src/reserveRelease/release.vibe takes RegisteredEvmDeployment, plan.family === \"evm\" and an evmUpgrade.vaultImplementation pin. apps/settlement/src/signer/reserveRelease.vibe uses EVM monthlyReleaseDigest. apps/settlement/src/chain/solana/messages.ts has only the builders releaseApprovalMessage/releaseMonthlyReserve, with no service caller. spec/settlement/reserveRelease.md does not name a network.",
+     "toAdd": "Record the network scope in reserveRelease.md. Add a `network: Network` field to ReserveRelease and a guard in canAdmitRetained/canCheck such as `r.network == Evm` (current implementation), so a Solana request has a named held/refused outcome and never reaches Approved. A later Solana approval path needs owner approval and its own adapter. Its pin and qualification concept differs because Solana has no evmUpgrade implementation pin. Also state that the Solana message binds root, total, unsettled and released, while the EVM digest binds period, allocationDigest, allocationRoot, remaining and released.",
+     "owner": "spec/settlement/reserveRelease.md"
+    },
+    {
+     "obligation": "Draft formal/drafts/monthly-reserve.md, section 'A valid contract release returns only the selected remaining gross': obsolete given commit 6364cda9a and current ProjectEscrow.sol.",
+     "status": "partial",
+     "where": "formal/drafts/monthly-reserve.md lines 165-190 (canRelease, afterRelease, release), 308-317 (partialRelease and releaseValues), 283 (sometimesReleased), 331 (weight_release), and the source citation of main ee1a4b2c lines 757-788 at line 11.",
+     "toAdd": "Obsolete items: the prose 'The contract can accept a partial release' and 'a remaining leaf can still prove if it fits'. The canRelease guard `M::compareAmounts(month.remaining, release.releaseGross) >= 0` must become `M::equalAmounts(release.releaseGross, month.remaining) and M::equalAmounts(month.remaining, month.admittedGross) and not(M::positiveAmount(month.releasedGross))`. afterRelease then sets remaining to M::zero and releasedGross to the whole amount. In the samples, partialRelease (releaseGross List(1) of remaining List(4)) and both expectedRemaining List(3) variants are now all refused, so sometimesReleased becomes unreachable. Replace them with a whole release { expectedRemaining: List(4), releaseGross: List(4), authority: \"authority\" } plus refused partial, stale and former-authority counterexamples. Add the invariant `alwaysReleaseWhole(v) = v.months.every(m => M::positiveAmount(m.releasedGross) implies M::equalAmounts(m.releasedGross, m.admittedGross) and M::equalAmounts(m.remaining, M::zero) and not(v.awards.some(a => a.period == m.period)))`. Re-cite the current ProjectEscrow.sol (packages/contracts/evm/src/ProjectEscrow.sol:782-803). Preferably drop the draft's own release transition and delegate to spec/contracts/evmEscrow.md canReleaseMonthlyReserve, which already states and proves the whole-only rule. The header's 'stricter release approval' wording should describe only the wrong-total and evidence conditions.",
+     "owner": "formal/drafts/monthly-reserve.md (or delete in favour of spec/contracts/evmEscrow.md)"
+    }
+   ]
+  }
+ },
+ {
+  "label": "audit:2",
+  "result": {
+   "items": [
+    {
+     "obligation": "E1. Source-backed EVM leaf cursor: each call examines at most 16 leaves from the journaled cursor. The cursor moves past index i only when i == cursor, the finalized award for leaf i's source exists and matches the leaf's actor, gross and fee, and the signer's journaled nonce for leaf i is finalized. It never skips a leaf and never moves back. Source: workers/payment-executor/core.ts submitEvmMonthlyReserve (origin/development lines about 1393-1475; maxLeaves=16; call() reads at the 'finalized' block; sendJournaledUntilFinalized).",
+     "status": "partial",
+     "where": "spec/settlement/monthlySettlement.md, section 'On EVM each monthly call examines at most 16 proven leaves...': leavesPerCall, leafInCall, nextLeafCursor, lawCallBounded, lawCursorWaitsForFinality. These are stateless laws over parameters and only simulated: monthlySettlement has no .proof.dfy. The cursor is not a state field. 'finalizedCommitted' is a bare boolean that is not tied to E::awardFor or to a match against the leaf. The cursor is not bound to the tree root (source key `${key}:${tree.hash}:finalized-cursor`). The range check 0 <= cursor <= leafCount is not stated.",
+     "toAdd": "In monthlySettlement.md, add the state `cursors: List[{ period: int, root: str, cursor: int }]` and the action `canAdvanceCursor(s, period, root, index, nonceSettled) = index == cursorFor(s, period, root) and index < E::monthFor(s.escrow, period).leafCount and root == E::monthFor(s.escrow, period).root and leafAwardMatches(s, period, index) and nonceSettled`. Here leafAwardMatches means E::awardFor(s.escrow, leafSource(index)) has the leaf's actor and gross and fee == ordinaryFee(gross). Its effect sets the cursor to index + 1. Invariants: alwaysCursorSourceBacked (every j < cursor has a matching finalized award, or the month's released > 0, see E3); alwaysCursorInRange (0 <= cursor <= leafCount); stepCursorMonotoneByOne (after.cursor is before.cursor or before.cursor + 1). Turn lawCursorWaitsForFinality into this state-bound step rule so the generated _ensures lemmas can prove it. Add monthlySettlement.proof.dfy, or move the cursor into a proved unit.",
+     "owner": "spec/settlement/monthlySettlement.md"
+    },
+    {
+     "obligation": "E2. Conflict halt: if an admitted month's leaf source already holds a finalized award with a different actor, gross or fee, the executor throws ('Admitted monthly source conflicts with a funded award'). It neither moves the cursor nor sends that leaf. The D1 award state becomes 'conflict' (backend/payments/monthly.ts awardStates).",
+     "status": "partial",
+     "where": "monthlySettlement.md canObserveConflict/observeConflict and alwaysObligationsMatchVault (D1 obligation side, simulated). monthly.md canRecordConflict. The executor's halt and its no-cursor-advance rule are not stated.",
+     "toAdd": "In monthlySettlement.md, add `canHaltOnLeafConflict(s, period, index) = index >= cursorFor(s, period) and not(E::sourceFree(s.escrow, leafSource(index))) and not(leafAwardMatches(s, period, index))`. Its effect sets a `halted` flag for the period and leaves the cursor and the escrow unchanged. Add stepConflictNeverAdvancesCursor. Add alwaysHaltedHasConflict: halted implies some unconsumed leaf source holds a mismatched award. Because the contract blocks manual awards while pending > 0, the rule should also show the halt is reachable only from an award recorded before admission. That needs a sometimes/never witness: neverConflictAfterAdmission.",
+     "owner": "spec/settlement/monthlySettlement.md"
+    },
+    {
+     "obligation": "E3. Branch where the remaining gross is zero, and the wrong-total release. When the finalized remaining == 0, the executor moves the cursor on the signer's journaled nonce alone, with no award check. It reports complete only when the root nonces (legacy key and v2 key) are settled and cursor == leafCount. Under the current contract (commit 6364cda9a), remaining == 0 has two causes: every leaf was committed, or the whole untouched reserve was released (no awards exist). The executor reads no monthlyReleased value, so a released month moves the cursor to leafCount with no award. A genuinely wrong-total month (state.root == tree.hash but state.total != tree.total) instead throws 'Another monthly reserve is already admitted' on every run, before and after release. Its D1 execution row never completes, and every run reports the same failure.",
+     "status": "missing",
+     "where": "No spec states either branch. monthlyExecution.md completes a row by observeFinality(Landed, height) only. reserveRelease.md owns approval of the service release, not executor completion. evmEscrow.md canReleaseMonthlyReserve (whole untouched: m.remaining == m.total and releasedGross == expectedRemaining, remaining set to 0) is proved by releaseMonthlyReserve_ensures, but no executor rule consumes the released state.",
+     "toAdd": "In monthlySettlement.md, state alwaysCursorSourceBacked as: for j < cursor, a matching award exists, or E::monthFor(...).released == admittedGross with no award from that period. Add `canAdvanceZeroRemaining(s, period, index, nonceSettled) = E::monthFor(...).remaining == 0 and index == cursor and nonceSettled`. Add a never-witness that a released month produces an award row. In monthlyExecution.md, add a terminal row phase `Released`, or an explicit `WrongTotal` held phase with a single operator-visible failure. The phase is entered from finalized evidence that the admitted total differs from the tree total, or that monthlyReleased(period) == admitted total. Add stepWrongTotalNeverCompletesAsPaid, so a wrong-total month is not retried forever as an unexplained failure and is never marked complete with awards missing. Whether released should count as 'complete' is a product-policy decision gate; the model should expose the choice, not pick an outcome.",
+     "owner": "spec/settlement/monthlyExecution.md (row terminal) + spec/settlement/monthlySettlement.md (cursor invariant)"
+    },
+    {
+     "obligation": "E4. Execution-row completion from the cursor. For a v2 EVM row, D1 monthly_payment_execution.complete=1 only when the executor returns complete: rootSettled && cursor == leafCount (the boolean must be present, otherwise the run throws). A legacy row completes when alreadyCommitted is true and complete is not false. Completion is permanent, and every step touches one row.",
+     "status": "partial",
+     "where": "monthlyExecution.md: alwaysCompleteFinalized, stepCompletionPermanent, stepOtherRowsUnchanged and alwaysOneRowPerMonth are simulated (no .proof.dfy). Completion is one canObserveFinality(key, Landed, height) per row and does not depend on the per-leaf cursor or on root-nonce settlement, so the composed parent/child (row with cursor) transition is not modelled.",
+     "toAdd": "In monthlyExecution.md, import monthlySettlement's cursor (or take it as a typed `CursorFact { root, cursor, leafCount, rootSettled }`). For v2 rows, replace canObserveFinality with `canComplete(e, key, fact) = row.v2 implies (fact.rootSettled and fact.cursor == fact.leafCount)`. Keep `Landed` only for legacy rows. Add alwaysV2CompleteMeansCursorDone and a reachable sometimesCompletedAfterOtherSenderCommittedLeaves (other senders committed every leaf while this signer's nonce was still unfinalized).",
+     "owner": "spec/settlement/monthlyExecution.md"
+    },
+    {
+     "obligation": "E5. Admission gate and resumable rows outside the window. The run sets admit = automatic consent (runConsent, which counts the owner's pledge) and cutoff <= now < close. A non-resumable legacy row is skipped when admit is false. A v2 or Solana row is still sent with admit=false: the executor returns notAdmitted and the row stays pending, with no completion and no failure. Selection takes all incomplete v2/Solana rows of any period, but legacy rows only for the active period.",
+     "status": "missing",
+     "where": "monthlyExecution.md has no admit flag, window, consent or notAdmitted outcome; canSubmit ignores them. monthlyCommitment.md canCloseWindow/closeWindow (Refused, WindowClosedUnadmitted) covers the attester journal but is not composed with the execution queue.",
+     "toAdd": "In monthlyExecution.md, add `admit: bool` and `consent: bool` to the Row or to the submit inputs. Add `canSubmit(..., admit) requires admit == (consent and Mo::windowOpen(period, now))`. Add a `NotAdmitted` SendResult that leaves the row Pending without invalidating any other row. Add the selection rule `selectable(row) = row.v2 or row.solana or row.period == activePeriod`. Add stepNoAdmissionOutsideWindow: a transition to Submitted from an unadmitted root requires admit. Add sometimesResumedAfterWindowClosed (an admitted month's leaves still progress with admit=false). Compose it with monthlyCommitment Refused so a never-admitted row that is past its window becomes terminal instead of taking a batch slot forever.",
+     "owner": "spec/settlement/monthlyExecution.md"
+    },
+    {
+     "obligation": "E6. Fair ordering and ordering to avoid reverts. A run takes up to 50 LRU rows. It adds up to 50 omitted current-period v2 roots of the same vault that a selected older row waits on. Inside the run it sorts newest period first. last_attempt is written before the executor call. One row's failure is collected and never blocks the others.",
+     "status": "covered-simulated",
+     "where": "monthlyExecution.md: canStartRun, canMarkAttempt, leastRecent, waitedOn, alwaysRunBounded, alwaysAttemptRecorded, canSubmit with newerRootPending, alwaysNoReorderingRevert, sometimesNewestFirst, sometimesPrerequisiteIncluded. spec/operations/paymentRun.md: stepFailureNeverSkipsALaterStep, stepFailuresKeptUntilTheNextRun. No .proof.dfy for either.",
+     "toAdd": "Conformance divergence: canSubmit refuses an older-period row while any newer v2 root of the vault is still incomplete, including across runs. The source does not refuse: it only sorts newest first within a run (workers/payments/index.ts runMonthlyCommitments). It relies on one signer's nonce order to keep the newer root ahead. Either weaken canSubmit to in-run ordering and add a stated assumption `sameSignerNonceOrder` (an older leaf sent after a newer root's nonce cannot be mined before it), or require the source to add the refusal. Also restrict waitedOn prerequisites to `period == activePeriod`, as the SQL does. The spec currently allows any newer period.",
+     "owner": "spec/settlement/monthlyExecution.md"
+    },
+    {
+     "obligation": "E7. Retry and restart through the exact-byte executor journal. Each key (the legacy root key monthly:<net>:<vault>:<period>, the v2 root key monthly:v2:..., and each leaf key ...:<root>:leaf:<i>) holds one attempt. A pending attempt is only rebroadcast with the same bytes. A new send for a key needs a finalized revert of every same-nonce variant (retireRevertedAttempt), and the revert is retained under :reverted:<tx>. When another sender already admitted the root or committed the leaf, the executor keeps offering the journaled bytes until the signer's latest nonce passes them, and treats the step as settled only when the finalized nonce passes them. The legacy journal is reconciled before any v2 root send.",
+     "status": "partial",
+     "where": "monthlySettlement.md prose and nextLeafCursor's nonceSettled boolean. monthlyExecution.md models only Failed (no change) and Dropped (back to Pending) per row. spec/settlement/signer.md canRetireReverted, stepRetiredRetained and alwaysCanonicalRetained cover the binding journal only, not monthly keys, and signer.md has no .proof.dfy.",
+     "toAdd": "In monthlyExecution.md, add a per-key journal (or put it in a shared executor-journal spec that both signer.md and monthlyExecution.md import): `JournalEntry { key, bytesDigest, nonce, phase: Live | Retired | Settled }`. canRebroadcast(key) requires the same bytesDigest. canSendNew(key) requires no Live entry, or a finalized revert of every signed variant. canSettle(key) requires finalizedNonce > nonce. Add alwaysOneLiveAttemptPerKey, stepRetiredRetained, stepNoNewBytesWhileLive, and a rule that the v2 root key may send only when the legacy key has no Live entry (stepLegacyReconciledFirst). Add a crash/restart witness: the cursor and journal persist, and a restarted call resumes at the first unsettled leaf (sometimesResumedAfterLostCall).",
+     "owner": "spec/settlement/monthlyExecution.md (or new spec/settlement/executorJournal.md shared with signer.md)"
+    },
+    {
+     "obligation": "E8. Executor authorization switching: the executor always uses monthly_payment_current_authorizations, the attempt with the highest source sequence (migration 0083). The cursor key is bound to the tree root, so a re-attested tree starts at cursor 0. If the admitted root differs from the current authorization's tree, the executor throws and makes no progress. Safety depends on an older attempt never being admitted after a newer one is published, because the ordinary source sequence only increases.",
+     "status": "missing",
+     "where": "monthlyCommitment.md stepAttemptsAppendOnly, stepNoSignatureAfterAdmission, alwaysAdmittedRootSigned (an admitted root matches some signed attempt, not necessarily the latest). Nothing ties the executor's chosen authorization to the admitted root.",
+     "toAdd": "In monthlyCommitment.md, add alwaysAdmittedIsLatestAttempt: phase == Admitted and not admittedLegacy implies admittedRoot == attempts.last().root. It follows from the monotone sourceSequence and canSignEvm signing only at a newer sequence. Add stepSequenceMonotone(view.sourceSequence). In monthlyExecution.md, add the precondition that a submit's root equals the current (latest) attempt's root, and that the cursor is keyed by (period, root).",
+     "owner": "spec/settlement/monthlyCommitment.md + spec/settlement/monthlyExecution.md"
+    },
+    {
+     "obligation": "E9. D1 underfunding recovery. The coordinator creates obligations only when a vault snapshot no older than 30 minutes, with the same asset, covers this month's payable awards plus every earlier unreserved obligation in the vault, after subtracting other months' open pledges. Otherwise it creates nothing and returns 'underfunded', with one idempotent Inbox notice (notifyMonthlyUnderfunded keyed monthly-underfunded:<project>:<period>, ONCE). It retries every coordinator run and creates the obligations after a deposit. A missing snapshot, a stale snapshot or a different asset returns 'stale-funding'.",
+     "status": "partial",
+     "where": "monthly.md: VaultObservation, fresh, covered, canCreateObligations, canNoteUnderfunded, stepUnderfundedNoticeOnce, sometimesUnderfundedThenFunded. monthlySettlement.md: canNoteUnderfunded, sometimesUnderfundedThenDeposit (simulated). monthly.proof.dfy proves only ValidMonthlySum and MonthlySumPositivity, not coverage. Not covered: (a) on EVM, sources that already hold any chain award are excluded from 'needed', both this month's and outstanding obligations, while Solana still counts an identical held award; covered() counts every payable share, so the spec refuses months the source funds. (b) The asset-mismatch and missing-snapshot outcome. (c) The compare-and-set creation: obligations_created_at is written only if the counts of monthly_payment_obligations and payment_obligations, the exact vault_snapshots row and the ban decisions are unchanged since the read; otherwise 'stale-funding' and a retry. (d) monthlySettlement takes earlierUnreserved as a free typed input, so the model does not prevent two months of one vault from both being created against the same free funds.",
+     "toAdd": "In monthly.md, extend VaultObservation with `family: EvmFamily | SolanaFamily`, `heldSources: List[SourceKey]`, `assetMatches: bool` and `readToken: int`. Define needed = sum of payable shares where (EVM: keyFor not in heldSources; Solana: all) plus earlierUnreservedNotHeld. Add `canReportStaleFunding` for not(fresh) or not(assetMatches). Make canCreateObligations require observation.readToken == m.vaultWriteToken (the compare-and-set). Add a multi-month vault composition in monthlySettlement.md (two months, shared escrow), where earlierUnreserved is derived from the sibling month's Created obligations whose sources are free on chain. Add the invariant stepCreationCovered: on createObligations, escrow.free - otherOpenPledges >= the sum over all months of the vault of Created obligations with free sources. Add a Dafny lemma for covered() monotonicity in free (more free never makes covered false).",
+     "owner": "spec/settlement/monthly.md (coverage, compare-and-set) + spec/settlement/monthlySettlement.md (multi-month composition)"
+    },
+    {
+     "obligation": "E10. No duplicate manual and automatic award on chain. A source is consumed globally, once, by a manual award or a monthly leaf. A manual award is refused while pendingMonthlyGross > 0 and while an open pledge for the in-window period exists (ProjectEscrow.sol commitAward: MonthlyLeavesPending, PledgedMonthOpen). A manual award made before admission bumps the ordinary sourceSequence, which makes an already signed root stale (MonthlySourceChanged).",
+     "status": "covered-proved",
+     "where": "spec/contracts/evmEscrow.md: canCommitAward (pendingMonthly == 0, no open in-window pledge, recordable), canReserveMonthly (sequence == e.vault.sourceSequence), canCommitMonthlyLeaf (recordable, no free debit), alwaysAwardsWellFormed (L::uniqueSources), alwaysPendingMatchesMonths, alwaysConserved, stepFreeSpentByOwnerOrAttestation. These are proved in evmEscrow.proof.dfy by commitAward_ensures, commitMonthlyLeaf_ensures, reserveMonthly_ensures and releaseMonthlyReserve_ensures (with UniqueSourcesAppend and RecordAward). Mirror in spec/settlement/escrow.md: sourceFree, canCommitAward, stepManualBlockedWhilePoolPending (simulated only; escrow.proof.dfy holds only arithmetic helper lemmas).",
+     "toAdd": "In evmEscrow.md, add the explicit step rule `stepManualBlockedWhileReserveOrPledgeOpen(before, via, after) = via == \"commitAward\" implies before.vault.pendingMonthly == 0 and not(before.vault.pledges.some(p => p.open and L::inWindow(p.period, before.now)))`, so the generated _ensures lemmas prove it. Today the guard sits only inside canCommitAward. Also add `stepManualBumpsSequence` (an ordinary commitAward increments sourceSequence by exactly 1).",
+     "owner": "spec/contracts/evmEscrow.md"
+    },
+    {
+     "obligation": "E11. No duplicate manual and automatic reservation at D1 level. One award per obligation. Pool remaining <= gross of unreserved obligations. A root is admitted only when every unreserved obligation's source is still free on chain. A hand award observed before admission is counted once and never reserved again by the pool. On Solana, a hand reservation is refused while automatic payment is on.",
+     "status": "covered-simulated",
+     "where": "monthlySettlement.md: canAdmitRoot (every Created obligation's source is free on chain; remainingGross == createdTotal; leafCount == createdCount), canCommitObligation (not Solana and automatic), canObserveExistingAward, alwaysObligationsMatchVault, alwaysOneAwardPerObligation, alwaysPoolWithinUnreserved, sometimesPoolBlocksManual. No .proof.dfy.",
+     "toAdd": "Add monthlySettlement.proof.dfy, or move alwaysOneAwardPerObligation and alwaysPoolWithinUnreserved into a proved unit, with inductive lemmas for admitRoot, materialize, commitObligation and commitManualAward. Add the open-pledge manual block from E10 to the composed canCommitManualAward through E::canCommitAward. Today the settlement escrow.md canCommitAward checks only pending, not pledges.",
+     "owner": "spec/settlement/monthlySettlement.md (+ spec/settlement/escrow.md for the pledge guard)"
+    },
+    {
+     "obligation": "E12. No duplicate payment of one award by manual and automatic dispatch: the contract pays an unpaid award once to the live binding, and the D1 dispatch index is absorbing.",
+     "status": "covered-proved",
+     "where": "evmEscrow.md canPay/pay with alwaysPaidMatchesAwards and stepPaidToLiveBinding, proved by pay_ensures and PayFacts in evmEscrow.proof.dfy. D1 side (simulated): settlement/paymentDispatch.md stepIndexedIsAbsorbing, alwaysIndexedHasExactReceipt; settlement/payment.md stepPaidPermanent.",
+     "toAdd": "None for the contract. Optionally, in monthlySettlement.md, add stepPaidObservedOnce (observePaid only from Reserved) so a manual payout and a dispatch both observed for the same obligation cannot double-count.",
+     "owner": "spec/contracts/evmEscrow.md / spec/settlement/paymentDispatch.md"
+    },
+    {
+     "obligation": "E13. Draft items made obsolete by the current contract (whole-untouched release only, commit 6364cda9a) or missing for this group, in formal/drafts/monthly-reserve.md.",
+     "status": "partial",
+     "where": "Draft: ContractRelease.releaseGross <= remaining in canRelease; afterRelease keeps a positive remaining; the prose 'The contract can accept a partial release' and 'a remaining leaf can still prove if it fits'; the partialRelease sample (expectedRemaining 4, releaseGross 1); releaseValues with expectedRemaining 3; sometimesReleased reachable after materialization. canManual omits the open in-window pledge block, and canAdmitRoot omits closePledge and unpledged. Source anchors point at main ee1a4b2 line ranges. The draft has no executor cursor, journal, D1 obligation coverage or execution row at all.",
+     "toAdd": "Replace canRelease with the evmEscrow.md rule: month.remaining == month.admittedGross and expectedRemaining == remaining and releaseGross == expectedRemaining; remaining becomes 0 and releasedGross becomes admittedGross. Delete partialRelease and the leaf-after-release story. Add neverLeafAfterRelease and neverReleaseAfterLeaf. Add the pledge guard to canManual and the pledge hold-back to canAdmitRoot. Re-anchor the source to the current ProjectEscrow.sol (commitAward lines about 527-536, releaseMonthlyReserve lines about 782-803). Do not add executor or D1 rules to the draft. They belong in monthlySettlement.md, monthlyExecution.md and monthly.md (E1-E9). The draft largely duplicates evmEscrow.md, which is already proved, so prefer retiring it into evmEscrow.md plus those settlement specs.",
+     "owner": "spec/contracts/evmEscrow.md (contract rules); draft to be retired"
+    }
+   ]
+  }
+ },
+ {
+  "label": "audit:1",
+  "result": {
+   "items": [
+    {
+     "obligation": "Partial leaf materialization preserves funds: a proven leaf moves exactly its gross from the pending monthly reserve into reserved principal plus fee, and every credited unit stays in exactly one bucket (free, pending, reserved principal, reserved fees, paid, payout fees, withdrawn). The asset balance covers them.",
+     "status": "covered-proved",
+     "where": "spec/contracts/evmEscrow.md: commitMonthlyLeaf, alwaysConserved, alwaysBalanceCovers, alwaysNonnegative, alwaysPendingMatchesMonths (pendingMonthly == sumRemaining). Proved by contracts/evmEscrow.proof.dfy commitMonthlyLeaf_ensures, using RecordAward and ReplaceMonth. Cross-network: spec/settlement/escrow.md materialize, alwaysGrossConserved (committed == pending + reserved) and alwaysReservedSplit. escrow.proof.dfy holds only generic limb lemmas (EscMove, EscAddLeft, EscSubLeft, EscSubRight), and spec/lock.json 'unproved' is empty, so the generated obligations count as discharged. Source: packages/contracts/evm/src/ProjectEscrow.sol commitMonthlyLeaf (lines 744-774) and recordAward (833-849).",
+     "toAdd": "Nothing for the contract layer. Do not add the draft's own GrossBalances/heldGross conservation: it is a second model of state that evmEscrow.md already owns, and it is weaker (no principal/fee split, no asset-balance coverage, no accrued fees).",
+     "owner": "spec/contracts/evmEscrow.md"
+    },
+    {
+     "obligation": "Free balance is never debited twice: leaf materialization reclassifies reserve and never charges freeBalance. Root admission debits only the unfunded remainder. A legacy V1 root charges free funds only for unconsumed sources and counts an identical existing award once.",
+     "status": "covered-proved",
+     "where": "spec/contracts/evmEscrow.md stepFreeSpentByOwnerOrAttestation: free decreases only via commitAward, commitBountyAward, withdrawUnused, commitMonthly or reserveMonthly, never via commitMonthlyLeaf. It is proved in commitMonthlyLeaf_ensures, reserveMonthly_ensures and releaseMonthlyReserve_ensures. The V1 rules are freshEntries/commitMonthly, proved by CommitMonthlyFacts and commitMonthly_ensures. Cross-network: spec/settlement/escrow.md stepFreeLeavesOnlyByOwnerOrRoot, admitRoot (debits remainingGross only), legacyNewTotal/admitLegacyMonth. Contract: commitMonthlyLeaf comment 'Do not charge freeBalance again'; reserveMonthly calls takeFree(remainingGross).",
+     "toAdd": "Nothing for the decrease direction.",
+     "owner": "spec/contracts/evmEscrow.md"
+    },
+    {
+     "obligation": "Free balance rises only by a deposit or a whole monthly-reserve release. Materialize, pay, fee claim and pledge close never credit free funds.",
+     "status": "missing",
+     "where": "No step rule in either spec. Conservation (evmEscrow alwaysConserved, escrow.md alwaysGrossConserved) does not catch a bucket-to-free reclassification. evmEscrow stepFreeSpentByOwnerOrAttestation constrains only decreases. Contract: freeBalance += only in deposit (line 519) and releaseMonthlyReserve (line 800). closePledge changes only openPledgedGross.",
+     "toAdd": "Add to evmEscrow.md: `pure def stepFreeRisesOnlyByDepositOrRelease(before: Escrow, via: str, after: Escrow): bool = after.vault.free > before.vault.free implies (via == \"deposit\" or via == \"releaseMonthlyReserve\")`. Mirror it in spec/settlement/escrow.md as `M::compareAmounts(after.free, before.free) > 0 implies (via == \"deposit\" or via == \"releaseReserve\" or via == \"releaseLeaf\")`. releaseLeaf is the Solana per-leaf release.",
+     "owner": "spec/contracts/evmEscrow.md (EVM); spec/settlement/escrow.md (cross-network)"
+    },
+    {
+     "obligation": "Source uniqueness: a source is consumed globally once. No second award comes from a hand commit, a leaf of the same root, or a leaf of another root. A replayed leaf fails before any accounting change.",
+     "status": "covered-proved",
+     "where": "spec/contracts/evmEscrow.md: recordable (not(L::hasSource)) and alwaysAwardsWellFormed (L::uniqueSources), with UniqueSourcesAppend and RecordAward in commitMonthlyLeaf_ensures. spec/settlement/escrow.md: validAwardTerms/sourceFree, alwaysAwards (one award per source). spec/settlement/monthlySettlement.md alwaysOneAwardPerObligation covers the composed month/vault view. Contract: recordAward reverts DuplicateAward on awards[id] or consumedSources[sourceDigest], before any counter changes.",
+     "toAdd": "Nothing.",
+     "owner": "spec/contracts/evmEscrow.md"
+    },
+    {
+     "obligation": "A duplicate-source leaf on EVM strands its reserve. With whole-only release (6364cda9a), two admitted V2 roots that carry the same source leave the second root's leaf permanently uncommittable. Once that root has any committed leaf, release is refused, so its gross stays in pendingMonthlyGross forever. The draft says only that 'only the first materialization reaches an award'.",
+     "status": "partial",
+     "where": "The Solana stranded-leaf case is stated in spec/settlement/escrow.md strandedLeaf, lawStrandedNeverReleases and canReleaseLeaf (network == Solana). Nothing states the EVM consequence. evmEscrow.md leafProves uses list membership only (m.leaves.includes(leaf)), not index or source distinctness. escrow.md leafUnused(period, index) tracks positions the contract does not store. The contract has no per-index flag; uniqueness rests on consumedSources plus the Merkle index binding. Per-period source digests ('fixed per project, month and actor', escrow.md) make a collision impossible only if the attester respects that. The contract does not enforce it.",
+     "toAdd": "In evmEscrow.md, add the attester assumption as a guard on reserveMonthly: `reservation.leaves.every(l => not(L::hasSource(v.awards, l.source)) and not(v.months.some(m => m.version2 and m.remaining > 0 and m.leaves.some(o => o.source == l.source))))`. Also add `alwaysLeafSourcesDistinct`: every v2 month's leaves have pairwise distinct sources. If the team prefers not to assume it, add `pure def evmStrandedLeaf(e, period, leaf) = leafProves(m, leaf) and L::hasSource(e.vault.awards, leaf.source) and m.committedGross > 0`, a law that it is never releasable, and a sometimes witness. The executor must then report it as stranded (owner: monthlySettlement.md).",
+     "owner": "spec/contracts/evmEscrow.md"
+    },
+    {
+     "obligation": "Per-month reserve accounting through materialize, pay and release: for each admitted V2 period, committedGross + released + remaining == admitted total. Remaining never increases. pendingMonthly equals the sum of remainders. Pay never changes the pending reserve.",
+     "status": "covered-proved",
+     "where": "spec/contracts/evmEscrow.md alwaysMonthsWellFormed (m.committedGross + m.released + m.remaining == m.total; m.released == 0 or (m.released == m.total and m.committedGross == 0)), alwaysPendingMatchesMonths and stepMonthsRetained (committedGross and released monotone, total fixed, so remaining is non-increasing). Proved by commitMonthlyLeaf_ensures, releaseMonthlyReserve_ensures, pay_ensures, ReplaceMonth and SumRemainingAppend. spec/settlement/escrow.md stepPoolLeavesOnlyByLeafOrRelease states pending decreases only via materialize, releaseReserve or releaseLeaf. That spec's alwaysMonths states only remaining <= admittedGross, with no per-month sum and no pending == sum of remainders.",
+     "toAdd": "Optionally add to spec/settlement/escrow.md: `alwaysPendingIsRemainders: M::equalAmounts(e.pending, e.months.foldl(M::zero, (s, m) => M::addAmounts(s, m.remaining)))`. Also add a per-month identity that admittedGross == remaining + released + the sum of MonthlyLeaf award gross for that period. evmEscrow.md also lacks an explicit pending-moves step, though it follows from the invariants. Adding `stepPendingOnlyByLeafOrRelease` (via in reserveMonthly, commitMonthlyLeaf, releaseMonthlyReserve) would mirror escrow.md cheaply.",
+     "owner": "spec/settlement/escrow.md (cross-network sum); spec/contracts/evmEscrow.md (step mirror)"
+    },
+    {
+     "obligation": "A month's committedGross equals the sum of gross of the awards materialized from that month's leaves. A materialized award keeps its historical period and leaf identity.",
+     "status": "partial",
+     "where": "spec/settlement/escrow.md keeps origin, period and index on Award. validAward requires MonthlyLeaf implies hasMonth(e, a.period). stepAwardsRetained/sameAwardTerms keep period and index immutable through pay. evmEscrow.md's L::Award (contracts/ledger.md) has no period field. committedGross is a free counter that no rule ties to the actual awards.",
+     "toAdd": "In evmEscrow.md (or ledger.md Award), add `period: int` to awards recorded by commitMonthlyLeaf (0 for hand awards). Add `alwaysCommittedMatchesLeaves: e.vault.months.every(m => m.committedGross == e.vault.awards.foldl(0, (t, a) => if (a.period == m.period) t + a.gross else t))` and `alwaysLeafAwardsInLeaves: e.vault.awards.every(a => a.period > 0 implies monthFor(e.vault.months, a.period).leaves.some(l => l.source == a.source and l.actor == a.actor and l.gross == a.gross))`.",
+     "owner": "spec/contracts/evmEscrow.md"
+    },
+    {
+     "obligation": "Paying a materialized award moves only its reserved principal and fee to paid net and payout fees, once, to the contract-selected binding. It leaves free and pending untouched, and the award's identity is retained.",
+     "status": "covered-proved",
+     "where": "spec/contracts/evmEscrow.md pay, alwaysReservedMatchesAwards, alwaysPaidMatchesAwards, stepAwardsRetained, stepPaidToLiveBinding and stepFreeSpentByOwnerOrAttestation, proved by pay_ensures and PayFacts. spec/settlement/escrow.md canPay/pay, alwaysReservedSplit, alwaysPaidSplit, alwaysFeesConserved and stepAwardsRetained. Contract pay (lines 910-929) touches reservedPrincipal, reservedFees, totalPaid, totalPayoutFees and accruedFees only.",
+     "toAdd": "Nothing. The draft's gross-only pay (no fee split, no bindingDelay, no version check) is a strict weakening; drop it.",
+     "owner": "spec/contracts/evmEscrow.md"
+    },
+    {
+     "obligation": "Reserve release on the current contract: the owner, with a current-authority signature, returns the whole remainder of a wholly untouched V2 month, once. remaining == total, releasedGross == expectedRemaining > 0, and no committed leaf or earlier release. Afterwards no leaf of that month can materialize, and the period stays occupied.",
+     "status": "covered-proved",
+     "where": "spec/contracts/evmEscrow.md canReleaseMonthlyReserve (m.remaining == m.total and releasedGross == expectedRemaining) and releaseMonthlyReserve (remaining 0, released = releasedGross). alwaysMonthsWellFormed forbids released > 0 together with committedGross > 0. Proved by releaseMonthlyReserve_ensures, which asserts m.committedGross == 0 && m.released == 0. spec/settlement/escrow.md canReleaseReserve (releasedGross == remaining == admittedGross, not(released > 0), implementation == ReleaseCapable), stepReleaseNeedsUpgrade and stepOneRootPerPeriod. spec/settlement/reserveRelease.md alwaysWholeRelease and alwaysNoSettlementOnRelease give the service policy. Contract lines 782-803.",
+     "toAdd": "In spec/settlement/escrow.md, add an EVM-scoped invariant mirroring evmEscrow: `e.asset.network != Solana implies e.months.every(m => M::positiveAmount(m.released) implies M::equalAmounts(m.released, m.admittedGross) and not(e.awards.some(a => a.origin == MonthlyLeaf and a.period == m.period)))`. Also fix the prose in escrow.md under 'Only an owner request co-signed by the current authority releases pool gross'. It still says 'a later leaf still proves while its gross fits the remainder', which is vacuous now that a release zeroes the remainder.",
+     "owner": "spec/settlement/escrow.md"
+    },
+    {
+     "obligation": "Materialization needs no wallet, fresh signature, open window or current opt-in, and survives an authority rotation. It never touches open pledges: free stays at or above openPledgedGross.",
+     "status": "covered-proved",
+     "where": "spec/contracts/evmEscrow.md canCommitMonthlyLeaf has no window, opt-in or authority guard. alwaysPledgesCovered and stepPledgeIrrevocable are proved in commitMonthlyLeaf_ensures. Reachability: spec/settlement/escrow.md sometimesLeafAfterOptOut, sometimesPartlyMaterialized; evmEscrow.md sometimesLeafCommitted. Contract: takeFree enforces freeBalance >= openPledgedGross (line 828); commitMonthlyLeaf never calls takeFree.",
+     "toAdd": "Nothing.",
+     "owner": "spec/contracts/evmEscrow.md"
+    },
+    {
+     "obligation": "Draft obsolescence (formal/drafts/monthly-reserve.md) for this group, given current ProjectEscrow.sol (whole-untouched release, 6364cda9a/5acbe45de) and the existing specs.",
+     "status": "partial",
+     "where": "formal/drafts/monthly-reserve.md, sections 'A valid contract release returns only the selected remaining gross' and 'Simulation spans...'. Source pin ee1a4b2cd and its line ranges under contracts/evm/src are stale; this checkout's path is packages/contracts/evm/src/ProjectEscrow.sol.",
+     "toAdd": "(1) canRelease admits a partial release. Add remaining == admittedGross, releaseGross == expectedRemaining and releasedGross == 0, or better, delete it and use evmEscrow canReleaseMonthlyReserve. (2) afterRelease accumulates releasedGross and keeps a nonzero remainder; it must set remaining = 0 and released = whole. (3) Drop the prose 'contract can accept a partial release', 'Already materialized awards stay payable, and a remaining leaf can still prove if it fits' and 'A changed remainder invalidates an earlier release signature'. A release now requires no leaf ever committed, and after it no leaf fits. (4) The samples partialRelease (1 of 4) and both expectedRemaining 3 variants are now refused, and no whole-release sample exists, so sometimesReleased becomes unreachable. Replace them with {expectedRemaining: 4, releaseGross: 4} under the current and the rotated authority. (5) The draft omits pledges entirely: takeFree's openPledgedGross check, cap = max(monthlyCap, pledge), admission while pledged with commitments off, manual blocked while a pledged month's window is open, and withdraw only from unpledged funds. All are already in evmEscrow.md. (6) The draft's refund has no 2% withdrawal fee, and its pay has no fee split. (7) Legacy V1 commitMonthly is still callable on chain and is not modeled. Recommendation: do not land the draft as a separate spec of the same vault state. Fold the missing rules above into evmEscrow.md and escrow.md.",
+     "owner": "formal/drafts/monthly-reserve.md (retire into spec/contracts/evmEscrow.md)"
+    }
+   ]
+  }
+ },
+ {
+  "label": "synthesize",
+  "result": {
+   "fullyCovered": false,
+   "plan": [
+    {
+     "obligation": "Root admission requires a signature from the exact current identity authority. Any caller may submit, and a rotated-out or pending authority is refused.",
+     "status": "partial",
+     "where": "spec/contracts/evmEscrow.md canReserveMonthly/canCommitMonthly/canReleaseMonthlyReserve take an unconstrained `attested: bool` (verified at lines 379, 403, 457), so the generated simulation can admit with any truth value, unrelated to e.identityAuthority. Rotation is modelled (proposeIdentityAuthority, executeIdentityAuthorityRotation, stepAuthorityChanges). reserveMonthly_ensures (evmEscrow.proof.dfy:1730) proves invariant preservation but says nothing about the signer. spec/settlement/escrow.md canAdmitRoot has `authorization.signer == e.authority`, which is simulated only: escrow.proof.dfy holds only the EscChain..EscSubRight helpers. Source: ProjectEscrow.sol reserveMonthly signedBy(monthlyReserveDigest(...), factory.identityAuthority(), ...).",
+     "toAdd": "In evmEscrow.md, replace `attested: bool` with `signer: str` in canReserveMonthly, reserveMonthly, canCommitMonthly, commitMonthly, canReleaseMonthlyReserve and releaseMonthlyReserve. Each guard requires `signer != \"\" and signer == e.identityAuthority`. Add `signer: str` to Month and set it on admission. Add the invariant `alwaysMonthsSigned(e) = e.vault.months.every(m => m.signer != \"\")`. Add the step rule `stepAdmittedByCurrentAuthority(before, via, after) = (via == \"reserveMonthly\" or via == \"commitMonthly\") implies after.vault.months.nthOr(before.vault.months.length(), noMonth).signer == before.identityAuthority`. Add the law `lawRotatedAuthorityRefuses(e, p, r, s, old) = (canExecuteIdentityAuthorityRotation(e) and old == e.identityAuthority and old != e.pendingIdentityAuthority) implies not(canReserveMonthly(executeIdentityAuthorityRotation(e), p, r, s, old))`. Change signerValues to {attester, nextAttester, other}. State in the prose that admission has no `by` guard, and that the EIP-712 chainId/verifyingContract binding is an adapter assumption. Proof: regenerate reserveMonthly_ensures, commitMonthly_ensures and releaseMonthlyReserve_ensures with the new clauses. Extend AppendMonth/ReplaceMonth for the signer field. Add a lemma `lawRotatedAuthorityRefuses_ensures`.",
+     "owner": "spec/contracts/evmEscrow.md (+ evmEscrow.proof.dfy)"
+    },
+    {
+     "obligation": "Admission binds the exact current ordinary source sequence. Every ordinary award (manual, V1 fresh entry, materialized leaf) advances it, so it stales a signed reservation.",
+     "status": "partial",
+     "where": "evmEscrow.md canReserveMonthly guard `sequence == e.vault.sourceSequence`. recorded() increments sourceSequence for Ordinary (verified line 283). These are guards only. No step or law states the semantics, and no lemma concerns it.",
+     "toAdd": "In evmEscrow.md, add `stepSourceSequenceCountsOrdinaryAwards(before, after) = if (before.vault.key.purpose == L::Ordinary) after.vault.sourceSequence == before.vault.sourceSequence + (after.vault.awards.length() - before.vault.awards.length()) else after.vault.sourceSequence == before.vault.sourceSequence`. Add `lawRecordedAwardStalesReservation(e, p, r, s, sg, src, actor, gross) = (canReserveMonthly(e, p, r, s, sg) and canCommitAward(e, src, actor, gross, e.vault.key.owner)) implies not(canReserveMonthly(commitAward(e, src, actor, gross, e.vault.key.owner), p, r, s, sg))`, and the same law for commitMonthlyLeaf. Proof: generated _ensures clauses for every action (RecordAward already gives the +1). Add a lemma for the law. Treat the uint256 width as an adapter assumption.",
+     "owner": "spec/contracts/evmEscrow.md (+ proof)"
+    },
+    {
+     "obligation": "Admission happens only inside the period window (opens 72 h after the month, closes 72 h after the next month). The admitted month retains that fact.",
+     "status": "partial",
+     "where": "evmEscrow.md admissionOpen uses L::inWindow (guard only). ledger.md lawWindowNonEmpty and lawNextWindowFollows are Quint only: ledger.proof.dfy proves only lawPayMovesOneAward. No invariant records admittedAt inside the window.",
+     "toAdd": "In evmEscrow.md, add `alwaysAdmittedInWindow(e) = e.vault.months.every(m => L::inWindow(m.period, m.admittedAt))`. admittedAt is frozen, so stepMonthsRetained must also keep `o.admittedAt == m.admittedAt`. Proof: _ensures clauses through AppendMonth/ReplaceMonth. In ledger.proof.dfy, add `lawWindowNonEmpty_ensures` and `lawNextWindowFollows_ensures`. Do not add any rule in which time alone releases a reserve.",
+     "owner": "spec/contracts/evmEscrow.md; window laws in spec/contracts/ledger.md (+ ledger.proof.dfy)"
+    },
+    {
+     "obligation": "Owner-only monthly cap/opt-in and pledges; pledge-raised cap max(enabled?cap:0, open pledge); free coverage after closing own pledge; one commitment per period forever; pledged period admits while off.",
+     "status": "covered-proved",
+     "where": "evmEscrow.md canSetMonthlyCommitment, stepMonthlyPolicyByOwner, capFor, closePledge, admissionOpen, canReserveMonthly, alwaysMonthsWellFormed, alwaysPledgesCovered, alwaysPledgedMonthUnadmitted, stepPledgeIrrevocable, stepMonthsRetained. These are proved by setMonthlyCommitment_ensures, reserveMonthly_ensures and commitMonthly_ensures, plus MonthPeriodUnique and AppendMonth.",
+     "toAdd": "None in evmEscrow.",
+     "owner": "spec/contracts/evmEscrow.md"
+    },
+    {
+     "obligation": "Cross-network settlement escrow admission agrees with the contract on cap, opt-out and pledge.",
+     "status": "partial",
+     "where": "spec/settlement/escrow.md canAdmitRoot (verified) requires `e.monthlyEnabled` unconditionally, compares wholeGross only with monthlyCap, and checks `free >= remaining` with no pledge holdback. That refuses pledged-while-off admissions the contract accepts and accepts admissions the contract refuses (PledgedFunds). canCommitAward checks pending but not the open in-window pledge. monthlySettlement.observation hard-codes otherOpenPledges: M::zero.",
+     "toAdd": "In escrow.md, add `pledges: List[{ period: int, amount: M::Amount, open: bool }]` and `openPledged`. In canAdmitRoot, replace `e.monthlyEnabled` with `(e.monthlyEnabled or ownPledge(e, p).open)`, replace the cap with `capFor(e, p) = max(if enabled monthlyCap else 0, ownPledge.amount if open)`, and require `remaining <= free - (openPledged - ownPledgeIfOpen)`. admitRoot closes the own pledge. Add `not(openInWindowPledge(e, ev.time))` to canCommitAward. Add the invariant `alwaysPledgesCovered(e) = M::compareAmounts(e.free, openPledged(e)) >= 0`. In monthlySettlement.observation, derive otherOpenPledges from escrow pledges. Proof: escrow.proof.dfy needs admitRoot_ensures and commitAward_ensures for alwaysGrossConserved and alwaysPledgesCovered. If pledges are kept EVM-only, scope them with `asset.network != Solana`.",
+     "owner": "spec/settlement/escrow.md (+ escrow.proof.dfy); spec/settlement/monthlySettlement.md observation"
+    },
+    {
+     "obligation": "Partial leaf materialization preserves funds (pending to reserved principal and fee, exact bucket conservation, balance covers). It never debits free funds, and a source is consumed once globally.",
+     "status": "covered-proved",
+     "where": "evmEscrow.md commitMonthlyLeaf, alwaysConserved, alwaysBalanceCovers, alwaysNonnegative, alwaysPendingMatchesMonths, alwaysAwardsWellFormed (L::uniqueSources), recordable, stepFreeSpentByOwnerOrAttestation. These are proved by commitMonthlyLeaf_ensures with RecordAward, ReplaceMonth and UniqueSourcesAppend. The per-month identity committedGross+released+remaining==total is in alwaysMonthsWellFormed.",
+     "toAdd": "None.",
+     "owner": "spec/contracts/evmEscrow.md"
+    },
+    {
+     "obligation": "Free balance rises only by a deposit or a whole monthly-reserve release; materialize, pay, fee claim and pledge close never credit free funds.",
+     "status": "missing",
+     "where": "Verified that evmEscrow.md stepFreeSpentByOwnerOrAttestation constrains decreases only. alwaysConserved does not catch a reserved-to-free reclassification. escrow.md stepFreeLeavesOnlyByOwnerOrRoot is also decrease-only.",
+     "toAdd": "In evmEscrow.md, add `stepFreeRisesOnlyByDepositOrRelease(before, via, after) = after.vault.free > before.vault.free implies (via == \"deposit\" or via == \"releaseMonthlyReserve\")`. In escrow.md, add `stepFreeEntersOnlyByDepositOrRelease(before, via, after) = M::compareAmounts(after.free, before.free) > 0 implies (via == \"deposit\" or via == \"releaseReserve\" or via == \"releaseLeaf\")`. Proof: the generated _ensures clauses in evmEscrow.proof.dfy discharge by frame for every action except deposit and release.",
+     "owner": "spec/contracts/evmEscrow.md (+ proof); spec/settlement/escrow.md"
+    },
+    {
+     "obligation": "A month's committedGross equals the gross of the awards materialized from its leaves, and each such award stays traceable to a leaf of that month.",
+     "status": "partial",
+     "where": "evmEscrow.md committedGross is a counter that no rule ties to awards. L::Award (contracts/ledger.md) has no period field. escrow.md keeps origin/period/index on Award, but no sum identity exists.",
+     "toAdd": "In contracts/ledger.md, add `period: int` to Award (newAward takes the period; 0 for hand awards and V1 entries). In evmEscrow.md commitMonthlyLeaf, record the period. Add `alwaysCommittedMatchesLeaves(e) = e.vault.months.every(m => m.committedGross == e.vault.awards.foldl(0, (t, a) => if (a.period == m.period) t + a.gross else t))` and `alwaysLeafAwardsInLeaves(e) = e.vault.awards.every(a => a.period > 0 implies hasMonth(e.vault.months, a.period) and monthFor(e.vault.months, a.period).leaves.some(l => l.source == a.source and l.actor == a.actor and l.gross == a.gross))`. Proof: a SumFoldChangeOne/SumFoldShift-based lemma `CommittedAppend` in evmEscrow.proof.dfy, used by commitMonthlyLeaf_ensures, with frame lemmas for the others.",
+     "owner": "spec/contracts/evmEscrow.md (+ ledger.md Award, + proof)"
+    },
+    {
+     "obligation": "A V2 leaf whose source is already consumed (another root, or an earlier award) can never commit. Once its month has any committed leaf, a whole release is refused too, so its gross stays pending. The executor must report it rather than loop.",
+     "status": "partial",
+     "where": "The Solana case is stated in escrow.md strandedLeaf/lawStrandedNeverReleases. For EVM, evmEscrow.md leafProves uses list membership only, and the contract does not enforce distinct leaf sources at admission. On the service side, MO::keyFor binds the source to (project, period, actor), and monthlySettlement.canAdmitRoot requires every Created obligation's source free on chain. The service therefore prevents the case by construction, but no rule states it.",
+     "toAdd": "Do not add an admission guard to evmEscrow: the contract does not enforce it, and the invariant would fail. In evmEscrow.md, add `evmStrandedLeaf(e, period, leaf) = leafProves(monthFor(e.vault.months, period), leaf) and leaf.gross <= monthFor(e.vault.months, period).remaining and L::hasSource(e.vault.awards, leaf.source)`, `lawStrandedLeafNeverCommits = evmStrandedLeaf implies not(canCommitMonthlyLeaf(e, period, leaf))` and `lawTouchedMonthNeverReleases(e, p, x, g, s, by) = monthFor(e.vault.months, p).committedGross > 0 implies not(canReleaseMonthlyReserve(e, p, x, g, s, by))`, with a reachability witness `sometimesEvmStrandedLeaf`. In monthlySettlement.md, add `alwaysAdmittedLeafSourcesFresh`: an admitted root's leaf sources are exactly sourceOf(s, actor) for this month's Created obligations, distinct per actor. Proof: law lemmas in evmEscrow.proof.dfy (direct from recordable and alwaysMonthsWellFormed).",
+     "owner": "spec/contracts/evmEscrow.md (+ proof); spec/settlement/monthlySettlement.md"
+    },
+    {
+     "obligation": "Pay moves only the reserved principal and fee, once, to the live binding. It leaves free and pending untouched.",
+     "status": "covered-proved",
+     "where": "evmEscrow.md canPay/pay, alwaysReservedMatchesAwards, alwaysPaidMatchesAwards, stepPaidToLiveBinding, stepAwardsRetained. These are proved by pay_ensures and PayFacts.",
+     "toAdd": "None.",
+     "owner": "spec/contracts/evmEscrow.md"
+    },
+    {
+     "obligation": "EVM contract release: the owner, with the current-authority signature over the exact digest, returns the whole untouched V2 remainder once. The period stays occupied, and afterwards no leaf commits.",
+     "status": "covered-proved",
+     "where": "evmEscrow.md canReleaseMonthlyReserve (m.remaining == m.total, releasedGross == expectedRemaining > 0) and releaseMonthlyReserve (remaining 0, released set). alwaysMonthsWellFormed: released == 0 or (released == total and committedGross == 0). Proved by releaseMonthlyReserve_ensures. A leaf after release fails because leaf.gross <= remaining == 0.",
+     "toAdd": "The signer binding is covered by the first item. Optional: add `stepReleaseOnce(before, via, after) = via == \"releaseMonthlyReserve\" implies before.vault.months.some(m => m.released == 0 and m.remaining == m.total and after.vault.months.some(o => o.period == m.period and o.released == m.total and o.remaining == 0))` and the law `lawNoLeafAfterRelease`. Both follow from the existing lemmas.",
+     "owner": "spec/contracts/evmEscrow.md"
+    },
+    {
+     "obligation": "Solana program whole-untouched release acceptance.",
+     "status": "covered-proved",
+     "where": "spec/contracts/solanaEscrow.md canReleaseMonthlyReserve/releaseMonthlyReserve with wholeReleased, alwaysMonthsWellFormed, proved by solanaEscrow.proof.dfy releaseMonthlyReserve_ensures.",
+     "toAdd": "Optional: add the named law lawNoLeafAfterWholeRelease.",
+     "owner": "spec/contracts/solanaEscrow.md"
+    },
+    {
+     "obligation": "Settlement-level release rule (both networks): whole untouched remainder only, the period stays committed. The prose must be current.",
+     "status": "covered-simulated",
+     "where": "spec/settlement/escrow.md canReleaseReserve (verified: releasedGross == remaining == admittedGross, not positive(month.released), ReleaseCapable, signer == authority). Simulated only, with no releaseReserve_ensures. The prose before it still says 'a later leaf still proves while its gross fits the remainder', which is stale. A separate wholeReleased flag is NOT needed: after release, remaining == 0, so provesLeaf (remaining >= gross > 0) refuses every leaf, and a prior releaseLeaf makes remaining < admittedGross, so the whole release refuses. The auditor's wholeReleased proposal is dropped.",
+     "toAdd": "In escrow.md, fix the prose: after a release the remainder is zero and no leaf proves. Add `alwaysEvmReleaseWhole(e) = e.asset.network != Solana implies e.months.every(m => M::positiveAmount(m.released) implies M::equalAmounts(m.released, m.admittedGross) and M::equalAmounts(m.remaining, M::zero) and not(e.awards.some(a => a.origin == MonthlyLeaf and a.period == m.period)))`. Add `lawNoLeafAfterRelease(e, proof, ev) = M::positiveAmount(monthFor(e, proof.period).released) and M::equalAmounts(monthFor(e, proof.period).remaining, M::zero) implies not(canMaterialize(e, proof, ev))`. State whether a Solana vault deploys ReleaseCapable or scope the upgrade gate to EVM. Proof: escrow.proof.dfy releaseReserve_ensures for alwaysGrossConserved, alwaysMonths and alwaysEvmReleaseWhole, using EscMove/EscSubLeft, plus materialize_ensures for alwaysEvmReleaseWhole.",
+     "owner": "spec/settlement/escrow.md (+ escrow.proof.dfy)"
+    },
+    {
+     "obligation": "Approved service policy: the attester approves only the whole untouched reserve of a complete retained allocation with the wrong total, on fresh finalized evidence, the current owner request revision and the pinned implementation. The owner signs and submits; the Worker never submits.",
+     "status": "covered-proved",
+     "where": "spec/settlement/reserveRelease.md canAdmitRetained/canCheck/canApprove/canOwnerSign/canFinalize, alwaysWholeRelease, alwaysBoundApproval, alwaysNoSettlementOnRelease, alwaysUntouchedBalances. Proved by reserveRelease.proof.dfy check_ensures, ownerSign_ensures, finalize_ensures and settlePart_ensures. Role separation is in signer.md (simulated).",
+     "toAdd": "Prose only: the service is stricter than the contract only on wrong total, complete evidence, freshness, owner revision and pin. Whole-only is now shared with both contracts. State in the adapter paragraph that termsOf compares the on-chain remaining with the service `reserved`, so untouchedness also depends on the contract's remaining == total check.",
+     "owner": "spec/settlement/reserveRelease.md"
+    },
+    {
+     "obligation": "Composition: an approved, owner-signed service release is exactly one the contract accepts. A finalized release receipt matches the escrow's resulting month, the signer is the current authority, and the owner is the submitter.",
+     "status": "missing",
+     "where": "reserveRelease.md explicitly defers binding the retained allocation to the escrow's admitted month. monthlySettlement.md wraps E::canReleaseReserve without importing reserveRelease. composition.md has no release rule.",
+     "toAdd": "In monthlySettlement.md, import `RR from ./reserveRelease`. Add `lawApprovedReleaseAccepted(r, e, period, ev) = (r.phase == RR::Approved or r.phase == RR::OwnerSigned) and E::monthFor(e, period).root == r.root and M::equalAmounts(E::monthFor(e, period).remaining, r.reserved) and M::equalAmounts(E::monthFor(e, period).remaining, E::monthFor(e, period).admittedGross) and E::later(e, ev) and e.implementation == E::ReleaseCapable implies E::canReleaseReserve(e, { period: period, expectedRemaining: r.reserved, releasedGross: r.reserved, signer: e.authority }, ev, e.owner)`. Add `lawFinalizedReleaseMatchesEscrow(r, e, period) = r.phase == RR::Released implies M::equalAmounts(E::monthFor(e, period).remaining, M::zero) and M::equalAmounts(E::monthFor(e, period).released, r.originalReserve)`. Add `stepOnlyOwnerSubmitsRelease`: a releaseReserve transition has by == escrow.owner, cross-referenced to signer.md ReleaseSubmission. Proof: add a law lemma in a new monthlySettlement.proof.dfy, or in composition.proof.dfy. It is direct from the guard definitions.",
+     "owner": "spec/settlement/monthlySettlement.md (or composition.md)"
+    },
+    {
+     "obligation": "Network scope of the service release policy: only the EVM approval path is implemented, while the Solana program accepts whole releases.",
+     "status": "partial",
+     "where": "reserveRelease.md names no network. The implementation (apps/settlement reserveRelease .vibe files) is EVM-only.",
+     "toAdd": "Add `network: Network` to ReserveRelease, and the guard `r.network == Evm` in canAdmitRetained/canCheck with a named refusal `NetworkUnsupported`, so a Solana request is held and never reaches Approved. Add `alwaysApprovedEvm`. Proof: extend check_ensures with the new invariant. Any later Solana path needs a separate owner decision.",
+     "owner": "spec/settlement/reserveRelease.md (+ proof)"
+    },
+    {
+     "obligation": "E1: source-backed EVM executor cursor. At most 16 leaves per call. The cursor passes leaf i only when i == cursor, a finalized award matches the leaf (actor, gross, fee), and the signer's journaled nonce is finalized. It never skips and never moves back. It is keyed by (period, tree root) and stays in the range 0..leafCount.",
+     "status": "partial",
+     "where": "monthlySettlement.md leavesPerCall, leafInCall, nextLeafCursor, lawCallBounded, lawCursorWaitsForFinality (verified). These are stateless laws over free booleans. The cursor is not state and finalizedCommitted is not tied to E::awardFor. There is no range rule and no proof file. Source: development workers/payment-executor/core.ts:1393-1475.",
+     "toAdd": "In monthlySettlement.md, add the state `cursors: List[{ period: int, root: str, cursor: int }]` and `leafMatches(s, proof) = not(E::sourceFree(s.escrow, proof.source)) and E::awardFor(s.escrow, proof.source).actor == proof.actor and M::equalAmounts(E::awardFor(s.escrow, proof.source).gross, proof.gross)`. Add the action `canAdvanceCursor(s, proof, nonceSettled) = proof.root == E::monthFor(s.escrow, proof.period).root and proof.index == cursorFor(s, proof.period, proof.root) and proof.index < E::monthFor(s.escrow, proof.period).leafCount and leafMatches(s, proof) and nonceSettled`, with effect cursor+1. Invariants: `alwaysCursorInRange` (0 <= cursor <= leafCount) and `alwaysCursorSourceBacked` (each passed index has a matching award, or the month was wholly released; see E3). Step rule: `stepCursorMonotoneByOne` (after == before or before + 1). Keep lawCallBounded. Proof: create monthlySettlement.proof.dfy with advanceCursor_ensures and frame lemmas for the escrow actions. Materialize only adds awards and stepAwardsRetained keeps them, so source-backing is preserved.",
+     "owner": "spec/settlement/monthlySettlement.md (+ new monthlySettlement.proof.dfy)"
+    },
+    {
+     "obligation": "E2: when an admitted leaf's source holds a mismatched finalized award, the executor halts. It neither moves the cursor nor sends the leaf, and D1 records a conflict.",
+     "status": "partial",
+     "where": "monthlySettlement.md canObserveConflict/observeConflict (D1 side, simulated). The executor halt is not stated. Source: core.ts 'Admitted monthly source conflicts with a funded award'.",
+     "toAdd": "In monthlySettlement.md, add `canHaltOnLeafConflict(s, proof) = proof.index >= cursorFor(...) and not(E::sourceFree(s.escrow, proof.source)) and not(leafMatches(s, proof))`. Its effect sets `halted` for (period, root) and leaves escrow and cursor unchanged. Add `stepConflictNeverAdvancesCursor` and `alwaysHaltedHasConflict`. Add `neverConflictAfterAdmission`: given E::canCommitAward's pending guard, a conflict source must predate admission. Proof: in monthlySettlement.proof.dfy, haltOnLeafConflict_ensures.",
+     "owner": "spec/settlement/monthlySettlement.md (+ proof)"
+    },
+    {
+     "obligation": "E3: zero-remaining branch and wrong-total release interplay. With remaining == 0, the executor advances on the journaled nonce alone, so a wholly released month (no awards) is reported complete. A wrong-total month (state.total != tree.total) throws 'Another monthly reserve is already admitted' on every run forever.",
+     "status": "missing",
+     "where": "Verified in development core.ts:1383-1419. No spec states either branch. monthlyExecution completes only via observeFinality(Landed).",
+     "toAdd": "In monthlySettlement.md, add `canAdvanceZeroRemaining(s, period, root, index, nonceSettled) = M::equalAmounts(E::monthFor(s.escrow, period).remaining, M::zero) and index == cursorFor(s, period, root) and index < leafCount and nonceSettled`. Change alwaysCursorSourceBacked to: for j < cursor, a matching award exists, or `M::equalAmounts(month.released, month.admittedGross)` and no MonthlyLeaf award has that period. Add `neverReleasedMonthHasLeafAward`. In monthlyExecution.md, add row phases `Released` and `WrongTotal` (held). Add `canObserveWrongTotal(e, key, fact)`, where fact.admittedTotal != fact.treeTotal from finalized evidence, and `canObserveReleased`. Add `stepWrongTotalNeverCompletes` (WrongTotal never moves to Complete except through Released), plus `sometimesWrongTotalReleased`. Whether Released counts as complete is a product decision gate: expose both phases and do not choose. Proof: lemmas in monthlySettlement.proof.dfy for the cursor invariant across releaseReserve and advanceZeroRemaining.",
+     "owner": "spec/settlement/monthlySettlement.md + spec/settlement/monthlyExecution.md"
+    },
+    {
+     "obligation": "E4: a v2 EVM execution row completes only when the root nonces are settled and cursor == leafCount. A legacy row completes on alreadyCommitted. Completion is permanent.",
+     "status": "partial",
+     "where": "monthlyExecution.md alwaysCompleteFinalized, stepCompletionPermanent, stepOtherRowsUnchanged, canObserveFinality(Landed). These are simulated, with no proof, and completion is not tied to the cursor or root-nonce settlement.",
+     "toAdd": "In monthlyExecution.md, add the input `CursorFact = { root: str, cursor: int, leafCount: int, rootSettled: bool }` and `canComplete(e, key, fact) = row.v2 implies (fact.rootSettled and fact.cursor == fact.leafCount)`. Keep Landed only for legacy rows. Add `alwaysV2CompleteMeansCursorDone` (store the fact on the row) and `sometimesCompletedAfterOtherSenderCommittedLeaves`. Proof: optional monthlyExecution.proof.dfy with complete_ensures.",
+     "owner": "spec/settlement/monthlyExecution.md"
+    },
+    {
+     "obligation": "E5: admission gate. admit = consent (pledge counts) and the window is open. A non-resumable legacy row is skipped when admit is false. A v2 or Solana row is still sent, and notAdmitted leaves it pending. Legacy rows are selected only for the active period.",
+     "status": "missing",
+     "where": "Verified that monthlyExecution.md has no admit, consent, window or notAdmitted outcome. Source: development workers/payments/index.ts:425-470.",
+     "toAdd": "In monthlyExecution.md, add the submit input `admit: bool` and the guard `admit == (consent and Mo::windowOpen(row.period, e.now))`. Add `SendResult = Sent | Failed | NotAdmitted`, where NotAdmitted leaves the row Pending and touches no other row. Add `selectable(e, row) = row.v2 or row.solana or row.period == e.activePeriod` in canMarkAttempt. Add `stepNoAdmissionWithoutAdmit` (a root submit with admit=false never yields Submitted for an unadmitted root) and `sometimesResumedAfterWindowClosed`. Add a terminal refusal for a never-admitted row past closesAt, composed with monthlyCommitment WindowClosedUnadmitted, so it stops taking a batch slot.",
+     "owner": "spec/settlement/monthlyExecution.md"
+    },
+    {
+     "obligation": "E6: run ordering. LRU batch of 50, prerequisite current-period v2 roots, newest first in a run, attempt recorded before the call, one failure never blocks others.",
+     "status": "partial",
+     "where": "monthlyExecution.md canStartRun, canMarkAttempt, waitedOn, canSubmit with newerRootPending, alwaysRunBounded, alwaysAttemptRecorded. Verified divergence: canSubmit refuses an older row while any newer v2 root is incomplete across runs, and waitedOn allows any newer period. The source only sorts within a run, and its prerequisite SQL restricts to activePeriod.",
+     "toAdd": "Weaken canSubmit to in-run ordering: `not(e.ordinaryRun.concat(e.prerequisiteRun).some(k => newer v2 row of the same vault, not yet submitted this run))`. Add the stated adapter assumption `sameSignerNonceOrder`. Restrict waitedOn to `o.period == e.activePeriod`. Keep alwaysNoReorderingRevert only under that assumption. Alternatively, change the source to refuse; that is a separate code decision.",
+     "owner": "spec/settlement/monthlyExecution.md"
+    },
+    {
+     "obligation": "E7: exact-byte executor journal per key (legacy root, v2 root, leaf i). Rebroadcast uses the same bytes. A new send requires a finalized revert of every variant, retained. A step settles only when the finalized nonce passes it. The legacy journal is reconciled before any v2 root send.",
+     "status": "partial",
+     "where": "monthlySettlement.md prose plus a nonceSettled boolean. monthlyExecution models only Failed/Dropped. signer.md canRetireReverted/stepRetiredRetained cover the binding journal only, and are unproved.",
+     "toAdd": "Create spec/settlement/executorJournal.md, shared by signer.md and monthlyExecution.md, with `JournalEntry = { key: str, bytesDigest: str, nonce: int, phase: Live | Retired | Settled }`. Actions: canRebroadcast (same bytesDigest, Live), canSendNew (no Live entry for the key, or every variant finalized-reverted and Retired), canSettle (finalizedNonce > nonce). Invariants: alwaysOneLiveAttemptPerKey, stepRetiredRetained, stepNoNewBytesWhileLive, stepLegacyReconciledFirst (the v2 root key sends only when the legacy key has no Live entry). Witness: sometimesResumedAfterLostCall. Add executorJournal.proof.dfy for alwaysOneLiveAttemptPerKey.",
+     "owner": "new spec/settlement/executorJournal.md (imported by monthlyExecution.md and signer.md)"
+    },
+    {
+     "obligation": "E8: the executor uses the latest authorization (highest source sequence), and the cursor is keyed by tree root. An admitted root that differs from the latest tree makes no progress, which is safe only if an older attempt can never be admitted after a newer one.",
+     "status": "missing",
+     "where": "monthlyCommitment.md alwaysAdmittedRootSigned (verified) only requires the root to be some attempt's root, and stale() re-signs on a sequence change. Nothing ties the admitted root to the latest attempt or to the executor's choice.",
+     "toAdd": "In monthlyCommitment.md, add `stepViewSequenceMonotone(before, after) = after.view.sourceSequence >= before.view.sourceSequence` and `alwaysAdmittedIsLatestAttempt(c) = (c.phase == Admitted or c.phase == Completed) and not(c.admittedLegacy) implies c.admittedRoot == latestAttempt(c).root`. In monthlyExecution.md, add a submit precondition that the row's root equals the latest attempt's root, keying the cursor by (period, root) per E1. Proof: optional monthlyCommitment.proof.dfy for alwaysAdmittedIsLatestAttempt, using sequence monotonicity plus canSignEvm's stale() guard.",
+     "owner": "spec/settlement/monthlyCommitment.md + spec/settlement/monthlyExecution.md"
+    },
+    {
+     "obligation": "E9: D1 underfunding recovery. Coverage must use a fresh snapshot (30 min) with the same asset. On EVM, sources already held on chain are excluded; on Solana, identical held awards are counted. Creation is compare-and-set, with one idempotent Inbox notice, and is retried after a deposit. A missing, stale or asset-mismatched snapshot returns stale-funding.",
+     "status": "partial",
+     "where": "monthly.md VaultObservation {observedAt, free, earlierUnreserved, otherOpenPledges}, fresh, covered, canCreateObligations, canNoteUnderfunded, stepUnderfundedNoticeOnce (verified). The model has no family-specific held-source exclusion, no asset match, no stale-funding outcome, and no compare-and-set read token. monthlySettlement takes earlierUnreserved as a free input and sets otherOpenPledges to zero. monthly.proof.dfy proves only the sum lemmas.",
+     "toAdd": "In monthly.md, extend VaultObservation with `family: EvmFamily | SolanaFamily`, `heldSources: List[SourceKey]`, `assetMatches: bool` and `readToken: int`. Set needed = sum of payable shares (EVM: keyFor not in heldSources) + earlierUnreserved. Add `canReportStaleFunding(m, o) = m.phase == Frozen and (not(fresh(m, o)) or not(o.assetMatches))`, effect none. Require `o.readToken == m.writeToken` in canCreateObligations (the compare-and-set). In monthlySettlement.md, add a two-month, one-vault composition in which earlierUnreserved is derived from the sibling month's Created obligations with free sources, and otherOpenPledges from escrow pledges. Add `alwaysCreatedCovered`: escrow.free - otherOpenPledges >= the sum of Created obligations with free sources across the vault's months, at creation. Proof: in monthly.proof.dfy, `CoveredMonotoneInFree` (more free never makes covered false) and `CoveredExcludesHeld`.",
+     "owner": "spec/settlement/monthly.md (+ proof) + spec/settlement/monthlySettlement.md"
+    },
+    {
+     "obligation": "E10: no duplicate manual and automatic award on chain. A manual award is blocked while pending > 0 or while an in-window pledge is open, and it bumps the sequence.",
+     "status": "covered-proved",
+     "where": "evmEscrow.md canCommitAward (verified: pendingMonthly == 0 and no open in-window pledge), recordable, uniqueSources. Proved by commitAward_ensures and commitMonthlyLeaf_ensures.",
+     "toAdd": "Optional: `stepManualBlockedWhileReserveOrPledgeOpen` and `stepManualBumpsSequence` as named step rules (subsumed by the source-sequence step above).",
+     "owner": "spec/contracts/evmEscrow.md"
+    },
+    {
+     "obligation": "E11: no duplicate manual and automatic reservation at D1 level. One award per obligation, pool remaining <= unreserved gross, root admitted only with free sources.",
+     "status": "covered-simulated",
+     "where": "monthlySettlement.md canAdmitRoot, canCommitObligation, canObserveExistingAward, alwaysObligationsMatchVault, alwaysOneAwardPerObligation, alwaysPoolWithinUnreserved. No .proof.dfy.",
+     "toAdd": "In the new monthlySettlement.proof.dfy, add admitRoot_ensures, materialize_ensures, commitObligation_ensures and commitManualAward_ensures for alwaysOneAwardPerObligation and alwaysPoolWithinUnreserved. The pledge guard on manual awards comes from the escrow.md alignment item.",
+     "owner": "spec/settlement/monthlySettlement.md (+ proof)"
+    },
+    {
+     "obligation": "E12: no duplicate payment of one award (contract pays once to the live binding; the D1 dispatch index is absorbing).",
+     "status": "covered-proved",
+     "where": "evmEscrow.md pay/alwaysPaidMatchesAwards/stepPaidToLiveBinding (pay_ensures). paymentDispatch.md stepIndexedIsAbsorbing and payment.md stepPaidPermanent (simulated).",
+     "toAdd": "None required.",
+     "owner": "spec/contracts/evmEscrow.md / spec/settlement/paymentDispatch.md"
+    }
+   ],
+   "retireDraftNote": "The draft is not fully covered, but it should be retired, not landed. Every contract rule in formal/drafts/monthly-reserve.md is already stated, and proved, in spec/contracts/evmEscrow.md (+ evmEscrow.proof.dfy): admission, cap, opt-out, one root per period, free coverage, leaf materialization, source uniqueness, pay and whole-only release. The draft is also wrong against current ProjectEscrow.sol (6364cda9a) in several places:\n- canRelease and afterRelease allow partial and repeated releases.\n- The partialRelease and expectedRemaining-3 samples are refused, which makes sometimesReleased unreachable.\n- canAdmitRoot requires enabledMonthly, ignores pledges and closePledge, and compares only with monthlyCap.\n- canManual lacks the open in-window pledge block.\n- Legacy V1 commitMonthly is unmodelled, and stepExactSourceSequence wrongly limits sequence changes to manual and materialize.\n- Refund lacks the 2% fee, and pay lacks the fee split.\n- The source pin (main ee1a4b2, contracts/evm/src line ranges) is stale.\n\nNothing in it is unique except adapter notes (uint128/uint256 bounds, canonical receipt uniqueness, verified factory authority observation). Those belong as assumption prose in evmEscrow.md and escrow.md.\n\nDelete the draft and land the remaining gaps in their owning specs:\n- evmEscrow.md: signer binding, the source-sequence step and law, the admitted-in-window invariant, free rises only by deposit or release, the committedGross-to-awards identity, and the EVM stranded-leaf law.\n- escrow.md: pledge-aware admission, the EVM whole-release invariant, stale prose, and a releaseReserve_ensures lemma.\n- monthlySettlement.md: the source-backed cursor, conflict halt, zero-remaining and released branch, release composition, a multi-month coverage composition, and a new proof file.\n- monthlyExecution.md: cursor-based completion, admit/notAdmitted, the WrongTotal and Released phases, and in-run ordering.\n- New executorJournal.md for the exact-byte retry journal.\n- monthlyCommitment.md: admitted root is the latest attempt.\n- monthly.md: family-specific held-source coverage, stale-funding, and compare-and-set.\n- reserveRelease.md: EVM-only network scope.\n\nThe audit dropped one auditor proposal, the wholeReleased flag in settlement escrow.md. After a whole release the remainder is zero, so provesLeaf already refuses every leaf, and a prior releaseLeaf already blocks a whole release.\n\nThe audit also verified that development workers/payment-executor/core.ts:1383-1419 confirms E3. A wrong-total month throws on every run. A wholly released month advances the cursor to leafCount with no awards and reports complete. Whether that counts as complete is an owner decision gate.\n\nNo files were edited."
+  }
+ }
+]

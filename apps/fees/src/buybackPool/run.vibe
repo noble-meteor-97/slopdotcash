@@ -88,7 +88,7 @@ function open(record: SendRecord) {
 
 effect function expire(running: Running, record: SendRecord) {
   const swap = { tx: running.instance.names.number("tx", record.tx), succeeded: false, finalized: true, output: zero, toFeeWallet: false, slopToken: false }
-  if (!canSettlePurchase(running.state, swap)) return try Effect.logWarning("fee_send_receipt_mismatch", { network: "Robinhood", kind: "buyback", id: record.id, txId: record.tx })
+  if (!canSettlePurchase(running.state, swap, "Worker")) return try Effect.logWarning("fee_send_receipt_mismatch", { network: "Robinhood", kind: "buyback", id: record.id, txId: record.tx })
   try step(running, { type: "settlePurchase", swap }, { expired: true })
 }
 
@@ -131,7 +131,7 @@ effect function settleSend(running: Running, record: SendRecord) {
   if (record.kind === "buyback") {
     const output = succeeded ? try credited(status.receipt, slop) : 0n
     const swap = { tx, succeeded, finalized: true, output: succeeded ? amountOf(output) : zero, toFeeWallet: output > 0n, slopToken: true }
-    if (!canSettlePurchase(running.state, swap)) return try Effect.logWarning("fee_send_receipt_mismatch", { network: "Robinhood", kind: "buyback", id: record.id, txId: status.tx })
+    if (!canSettlePurchase(running.state, swap, "Worker")) return try Effect.logWarning("fee_send_receipt_mismatch", { network: "Robinhood", kind: "buyback", id: record.id, txId: status.tx })
     try step(running, { type: "settlePurchase", swap }, { receipt })
     return
   }
@@ -141,7 +141,7 @@ effect function settleSend(running: Running, record: SendRecord) {
     if (moved.burned !== amount || moved.left !== amount) return try Effect.logWarning("fee_send_receipt_mismatch", { network: "Robinhood", kind: "burn", id: record.id, txId: status.tx })
   }
   const sendReceipt = { tx, succeeded, finalized: true }
-  if (!canSettleBurn(running.state, sendReceipt)) return try Effect.logWarning("fee_send_receipt_mismatch", { network: "Robinhood", kind: "burn", id: record.id, txId: status.tx })
+  if (!canSettleBurn(running.state, sendReceipt, "Worker")) return try Effect.logWarning("fee_send_receipt_mismatch", { network: "Robinhood", kind: "burn", id: record.id, txId: status.tx })
   try step(running, { type: "settleBurn", receipt: sendReceipt }, { receipt })
 }
 
@@ -152,12 +152,12 @@ effect function reconcile(running: Running) {
 }
 
 effect function decidedPurchase(running: Running, purchaseQuote: PurchaseQuote, facts: Facts) {
-  if (canDecidePurchase(running.state, purchaseQuote)) return try step(running, { type: "decidePurchase", quote: purchaseQuote }, facts)
+  if (canDecidePurchase(running.state, purchaseQuote, "Worker")) return try step(running, { type: "decidePurchase", quote: purchaseQuote }, facts)
   try Effect.logWarning("fee_buyback_undecided", { network: "Robinhood", leg: "buyback", amount: purchaseQuote.spent, decision: purchaseDecision(running.state, purchaseQuote).state, mode: running.state.runtime.buybackMode })
 }
 
 effect function decidedBurn(running: Running, request: BurnRequest, facts: Facts) {
-  if (canDecideBurn(running.state, request)) return try step(running, { type: "decideBurn", burnRequest: request }, facts)
+  if (canDecideBurn(running.state, request, "Worker")) return try step(running, { type: "decideBurn", burnRequest: request }, facts)
   try Effect.logWarning("fee_buyback_undecided", { network: "Robinhood", leg: "burn", value: request.value, decision: burnDecision(running.state, request).state, mode: running.state.runtime.buybackMode })
 }
 
@@ -199,7 +199,7 @@ effect function buy(running: Running, purchaseQuote: PurchaseQuote, slippageBps:
   const signed = try signedEvm(signing, "purchase")
   const tx = running.instance.names.number("tx", signed.txId)
   const signedQuote = { ...purchaseQuote, tx, minimum: amountOf(signed.prepared.minimumOutput) }
-  if (!canPurchase(running.state, signedQuote)) return try refusedPurchase(running, purchaseQuote, quoted, "the signed purchase is outside the pool's terms")
+  if (!canPurchase(running.state, signedQuote, "Worker")) return try refusedPurchase(running, purchaseQuote, quoted, "the signed purchase is outside the pool's terms")
   try step(running, { type: "purchase", quote: signedQuote }, { quote: quoted, signed: signedFacts(running.settings, signed) })
   const sent = try broadcastOf(running, signed.rawTx, signed.txId, "fee_buyback_submitted")
   if (sent.kind !== "Accepted") try step(running, { type: "loseSend", tx }, { detail: sent.detail })
@@ -277,7 +277,7 @@ effect function burnLeg(running: Running) {
   const signed = try signedEvm(signing, "burn")
   const tx = running.instance.names.number("tx", signed.txId)
   const signedRequest = { ...request, tx }
-  if (!canBurn(running.state, signedRequest)) return try refusedBurn(running, request, "the signed burn is outside the pool's terms")
+  if (!canBurn(running.state, signedRequest, "Worker")) return try refusedBurn(running, request, "the signed burn is outside the pool's terms")
   try step(running, { type: "burn", burnRequest: signedRequest }, { signed: signedFacts(settings, signed) })
   const sent = try broadcastOf(running, signed.rawTx, signed.txId, "fee_burn_submitted")
   if (sent.kind !== "Accepted") try step(running, { type: "loseSend", tx }, { detail: sent.detail })
@@ -289,7 +289,7 @@ effect function attempt<E, R>(leg: string, program: void!E!R) {
 
 export effect function robinhoodPool(instance: PoolInstance, settings: PoolSettings) {
   const running: Running = { instance, state: (try poolOf(instance)).state, settings, records: [] }
-  if (!canBeginRun(running.state)) return { instance: running.instance, state: running.state, records: running.records } satisfies PoolResult
+  if (!canBeginRun(running.state, "Worker")) return { instance: running.instance, state: running.state, records: running.records } satisfies PoolResult
   try step(running, { type: "beginRun" })
   let approving = true
   try attempt("reconcile", effect { approving = try reconcile(running) })

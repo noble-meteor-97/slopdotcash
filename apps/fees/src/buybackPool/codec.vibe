@@ -231,18 +231,18 @@ export effect function decodePool(instance: PoolInstance, [sent, reserved, repla
       purchases += 1
       if (instance.runs > 0 && purchases > instance.runFrom) runSpent += spent
       const minimum = amountOf(try exactAmount(row.min_amount_out ?? "0", label))
-      state = { ...purchase(at, { route: "RouteFound", tx, asset: usdgAsset, amountIn: spent, spent, minimum, gasValue: 0, slippageBps: 0, impactBps: 0, receiver: "fees", tokenPaused: false, balance: spent }), clock }
-      if (row.state === "unknown") state = loseSend(state, tx)
+      state = { ...purchase(at, { route: "RouteFound", tx, asset: usdgAsset, amountIn: spent, spent, minimum, gasValue: 0, slippageBps: 0, impactBps: 0, receiver: "fees", tokenPaused: false, balance: spent }, "Worker"), clock }
+      if (row.state === "unknown") state = loseSend(state, tx, "Worker")
       if (row.state === "finalized" || row.state === "failed") {
         const output = succeeded ? amountOf(try exactAmount(row.amount_out ?? "0", label)) : zero
-        state = settlePurchase(state, { tx, succeeded, finalized: true, output, toFeeWallet: true, slopToken: true })
+        state = settlePurchase(state, { tx, succeeded, finalized: true, output, toFeeWallet: true, slopToken: true }, "Worker")
       }
       continue
     }
     const quantity = amountOf(try exactAmount(row.amount_in, label))
-    state = { ...burn(at, { tx, quantity, value: 0, gasValue: 0, destination: deadAddress, tokenPaused: false }), clock }
-    if (row.state === "unknown") state = loseSend(state, tx)
-    if (row.state === "finalized" || row.state === "failed") state = settleBurn(state, { tx, succeeded, finalized: true })
+    state = { ...burn(at, { tx, quantity, value: 0, gasValue: 0, destination: deadAddress, tokenPaused: false }, "Worker"), clock }
+    if (row.state === "unknown") state = loseSend(state, tx, "Worker")
+    if (row.state === "finalized" || row.state === "failed") state = settleBurn(state, { tx, succeeded, finalized: true }, "Worker")
   }
   const pool = try decodeState({ ...state, clock, runNumber: instance.runs, runSpent, decisions } satisfies Pool)
   return { state: pool, sends, purchases } satisfies Ledger

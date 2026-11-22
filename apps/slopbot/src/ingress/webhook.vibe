@@ -129,26 +129,62 @@ effect function completed(context: Context, state: Webhook) {
   return done ?? try durable(context, state, { type: "complete", requestId, committed: false })
 }
 
-effect function routed(context: Context, claimed: Webhook, parsed: Parsed) {
-  const lookups = try valueLookups(claimed)
-  const valued = try durable(context, claimed, { type: "inspectValue", requestId, ...lookups })
+interface Progress {
+  state: Webhook
+}
+
+effect function recorded(context: Context, progress: Progress, event: Event) {
+  progress.state = try durable(context, progress.state, event)
+  return progress.state
+}
+
+effect function routed(context: Context, progress: Progress, parsed: Parsed) {
+  const lookups = try valueLookups(progress.state)
+  const valued = try recorded(context, progress, { type: "inspectValue", requestId, ...lookups })
   if (settled(valued)) return valued
   const job = qualifiedJob(parsed.body) === "NoJob" ? undefined : parsed.job
   const queueLookup = job === undefined ? { registration: unregistered, lookupOk: true } : try looked({ owner: job.owner, repo: job.repo, repositoryId: job.repositoryId })
-  let state = try durable(context, valued, { type: "inspectQueue", requestId, ...queueLookup })
-  if (request(state, requestId).phase === "PersistReopen") state = try durable(context, state, { type: "bindReopen", requestId, strictSource: parsed.strictSource })
+  let state = try recorded(context, progress, { type: "inspectQueue", requestId, ...queueLookup })
+  if (request(state, requestId).phase === "PersistReopen") state = try recorded(context, progress, { type: "bindReopen", requestId, strictSource: parsed.strictSource })
   if (request(state, requestId).phase === "SendQueue" && job !== undefined) {
     const sent = send(job) catch () => false
-    state = try durable(context, state, { type: "send", requestId, ack: sent === false ? "QueueRejected" : "QueuedAndAcked" })
+    state = try recorded(context, progress, { type: "send", requestId, ack: sent === false ? "QueueRejected" : "QueuedAndAcked" })
   }
-  if (request(state, requestId).phase === "AwaitCompletion") state = try completed(context, state)
+  if (request(state, requestId).phase === "AwaitCompletion") {
+    state = try completed(context, state)
+    progress.state = state
+  }
   return state
 }
 
+function failureOf(state: Webhook): Event | undefined {
+  switch (request(state, requestId).phase) {
+    case "InspectValue":
+      return { type: "inspectValue", requestId, registration: unregistered, writeRegistration: unregistered, lookupOk: false }
+    case "InspectQueue":
+      return { type: "inspectQueue", requestId, registration: unregistered, lookupOk: false }
+    case "SendQueue":
+      return { type: "send", requestId, ack: "QueuedAckLost" }
+    case "AwaitCompletion":
+      return { type: "complete", requestId, committed: false }
+    default:
+      return undefined
+  }
+}
+
+effect function releasedAfter(context: Context, progress: Progress) {
+  for (let step = 0; step < 3; step++) {
+    const failure = failureOf(progress.state)
+    if (failure === undefined) return
+    try recorded(context, progress, failure)
+  }
+}
+
 effect function releasing(context: Context, claimed: Webhook, parsed: Parsed) {
-  return routed(context, claimed, parsed) catch effect (error) => {
+  const progress: Progress = { state: claimed }
+  return routed(context, progress, parsed) catch effect (error) => {
     try Effect.logError("slopbot webhook failed", { delivery: context.deliveryId, failure: error._tag })
-    const _released = durable(context, claimed, { type: "releaseOrdinary" }) catch () => claimed
+    const _released = releasedAfter(context, progress) catch () => undefined
     throw error
   }
 }

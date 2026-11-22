@@ -3,7 +3,7 @@ import { millisOf } from "@repo/platform/clock"
 import { randomId } from "@repo/platform/crypto"
 import { D1, sql } from "@repo/platform/d1"
 import type { Admission } from "../../gen/slopbot__closeCapacity.effect.vibe"
-import { type Candidate, type LeaseView, type RefusalReason, canAddModeratorLabel, canBlockClose, canConfirmCloseComment, canLabelBlocked, canNotifyModerator, disputed, mayReserve } from "../../gen/slopbot__closeAttempt.effect.vibe"
+import { type Candidate, type LeaseView, type RefusalReason, canAddModeratorLabel, canBlockClose, canCommentBlocked, canConfirmCloseComment, canNotifyModerator, disputed, mayReserve } from "../../gen/slopbot__closeAttempt.effect.vibe"
 import type { GateObservation } from "../../gen/slopbot__closure.effect.vibe"
 import { CloseAttemptMissing, confirmSlot, rejectSlot, reserveSlot } from "../closeCapacity/store.vibe"
 import { type CloseRequest, closeComment, closeRecheck } from "../closure/decide.vibe"
@@ -14,7 +14,7 @@ import { type ReviewClaim, ReviewLeaseLost, assertReviewClaim, claimReview, fini
 import type { FinishDetail } from "../lease/writes.vibe"
 import { recordAction } from "../publish/actions.vibe"
 import { type CommentTarget, type Reviewed, type VerifiedDefect, commentBody, upsertComment } from "../publish/comment.vibe"
-import { addLabels, categoryLabel } from "../publish/labels.vibe"
+import { addLabels } from "../publish/labels.vibe"
 import { requireScope } from "../publish/scope.vibe"
 import type { CallRecord } from "../route/route.vibe"
 import { type ReviewSettings, type Session, commentTargetOf, completeReview, failReview, reviewDetails, scopeOf, settleFailure } from "../review/run.vibe"
@@ -108,7 +108,7 @@ effect function commentOnly(request: CloseRequest, result: string) {
 effect function labeledInstead(request: CloseRequest, record: AttemptRecord, reason: string) {
   const { session, category, verdict } = request
   const contested = disputed(try attemptState(record))
-  if (!contested && !canLabelBlocked(try attemptState(record))) {
+  if (!contested && !canCommentBlocked(try attemptState(record))) {
     try failReview(session, { verdict, action: "none", skipReason: reason })
     return reason
   }
@@ -119,10 +119,8 @@ effect function labeledInstead(request: CloseRequest, record: AttemptRecord, rea
   try assertReviewClaim(session.attempt.claim)
   try requireScope(target, scopeOf(session))
   if (try reconcileConfirmedReopen(subjectOf(session))) return try commentOnly(request, reopenedRevision)
-  if (contested || !canLabelBlocked(try attemptState(record))) return try commentOnly(request, disputedRevision)
-  try addLabels(target, [categoryLabel(category)])
-  try sendAttempt(record, { type: "labelBlocked" })
-  try recordAction({ ...action, action: "label" })
+  if (contested || !canCommentBlocked(try attemptState(record))) return try commentOnly(request, disputedRevision)
+  try sendAttempt(record, { type: "commentBlocked" })
   try completeReview(session, { verdict, action: "label" }, request.triage.call !== undefined)
   return `labeled (${category})`
 }

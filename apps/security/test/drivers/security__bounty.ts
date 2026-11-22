@@ -1,7 +1,9 @@
 // spec/security/bounty.md, "Cases of one project share holds, funds and the route observation"; spec/security/bounty.md, "The earliest human-confirmed eligible report of a root cause qualifies first"; spec/security/bounty.md, "A vault reservation needs a fresh finalized snapshot that still covers the award"; spec/security/bounty.md, "A finalized vault payout settles its hold and keeps the record"; spec/security/bounty.md, "One root cause holds at most one proposal or award obligation"
-import { Cause, Effect, Exit, Layer, ManagedRuntime } from "effect";
+import { Cause, Effect, Exit, Layer, ManagedRuntime, Schema } from "effect";
 import { webCrypto } from "@repo/platform/crypto";
 import { D1, type Statement, d1, sql } from "@repo/platform/d1";
+import { GitHub } from "@repo/platform/github";
+import { GitHubApp } from "@repo/platform/github/app";
 import { Refused, outbound } from "@repo/platform/http";
 import { Roles } from "@repo/platform/roles";
 import { database, migrate, startWorker, storage } from "@repo/platform/testing";
@@ -18,7 +20,7 @@ import { SecurityProgramFunds } from "../../src/bounty/funds.vibe";
 import { awardClearancesLive } from "../../src/bounty/store.vibe";
 import type { ProgramFundsView } from "../../src/program/manifest.ts";
 import { caseRecord } from "../../src/cases/rows.vibe";
-import { performed } from "../../src/cases/routes.vibe";
+import { claimed, performed, recorded } from "../../src/cases/routes.vibe";
 import { reportBucket } from "../../src/privacy/reads.vibe";
 import { ReportingPrograms } from "../../src/receipt/program.vibe";
 import { slopReceipt } from "../../src/receipt/statements.vibe";
@@ -48,6 +50,10 @@ let funds: { readonly view: ProgramFundsView | undefined; readonly finalized: bo
 let route: { readonly direct: DirectRoute | undefined; readonly observedAt: number } = { direct: undefined, observedAt: 0 };
 const cases = new Map<number, string>();
 let keys = 0;
+// The program terms in force at a claimed or attested receipt time, as the receipt check reads them.
+let atReceiptTerms: ReceiptTerms | undefined;
+// GitHub's private-report list of the program repository, as the receipt check reads it through the Slop App.
+let advisories: ReadonlyArray<unknown> = [];
 
 const base = () => epoch + generation * span;
 const at = (ms: number) => new Date(base() + ms).toISOString();
@@ -87,10 +93,11 @@ const ports = Layer.mergeAll(
     has: (id, role) => Effect.succeed(role === "moderator" && ids(snapshot.moderators).includes(id)),
     isTeam: (id) => Effect.succeed(ids(snapshot.moderators).includes(id)),
     snapshot: (role) => Effect.succeed(role === "moderator" ? ids(snapshot.moderators) : []),
+    ownerSession: () => Effect.succeed(undefined),
   }),
   Layer.succeed(ReportingPrograms, {
     current: () => Effect.succeed({ repository, approvers: { technical: ids(snapshot.technical), financial: ids(snapshot.financial), dispute: [], sponsor: [] }, status: "open", closesAt: undefined, acknowledgeHours: 0 }),
-    atReceipt: () => Effect.succeed(undefined),
+    atReceipt: () => Effect.succeed(atReceiptTerms === undefined ? undefined : { revision: atReceiptTerms.revision, publishedAt: at(atReceiptTerms.publishedAt), terms: frozenOf(atReceiptTerms), excludedFindings: atReceiptTerms.excludedFindings }),
     unbanned: (id) => Effect.succeed(ids(snapshot.banned).includes(id) ? sql`0` : sql`1`),
   }),
   Layer.succeed(SecurityProgramFunds, { read: () => Effect.promise(() => programFunds()) }),
@@ -102,7 +109,18 @@ await db.batch([
   db.prepare("INSERT INTO projects(id,status,revision,manifest,manifest_sha256,created_at,updated_at) VALUES(?,'active',1,?,?,?,?)").bind(project, manifest, "a".repeat(64), new Date(epoch).toISOString(), new Date(epoch).toISOString()),
 ]);
 
-const services = Layer.mergeAll(d1(db), webCrypto, reportBucket(await storage(mf, "PRIVATE_TRACES")), clock.layer, receiptNotices, ports, Layer.provide(privateRoute({ apiKey: undefined }), Layer.merge(outbound, webCrypto)));
+const unused = () => Effect.die(new Error("the receipt check only lists the repository's advisories"));
+const githubApp = Layer.succeed(GitHubApp, {
+  appJwt: () => Effect.succeed("app-jwt"),
+  installationToken: unused,
+  installationFor: () => Effect.succeed("1"),
+  asInstallation: () => Layer.succeed(GitHub, {
+    json: unused, graphql: unused, bytes: unused, send: unused, status: unused,
+    pages: (path, schema) => path.startsWith(`/repos/${repository}/security-advisories`) ? Effect.orDie(Effect.forEach(advisories, (item) => Schema.decodeUnknownEffect(schema)(item))) : unused(),
+  }),
+});
+
+const services = Layer.mergeAll(d1(db), webCrypto, reportBucket(await storage(mf, "PRIVATE_TRACES")), clock.layer, receiptNotices, ports, githubApp, outbound, Layer.provide(privateRoute({ apiKey: undefined }), Layer.merge(outbound, webCrypto)));
 const runtime = ManagedRuntime.make(Layer.provideMerge(awardClearancesLive, services));
 type Services = ManagedRuntime.ManagedRuntime.Services<typeof runtime>;
 
@@ -153,6 +171,69 @@ async function receive(id: number, event: Extract<Event, { type: "receive" }>): 
   return result;
 }
 
+// A generation-unique advisory per case: the project is shared by every generation.
+const ghsaLetters = "23456789cfghjmpqrvwx";
+function advisoryOf(id: number, kind: "claim" | "record") {
+  let rest = generation;
+  let block = "";
+  for (let place = 0; place < 4; place++) {
+    block = `${ghsaLetters[rest % ghsaLetters.length]}${block}`;
+    rest = Math.floor(rest / ghsaLetters.length);
+  }
+  return `GHSA-${block}-${kind === "claim" ? "cfgh" : "rvwx"}-${id === 1 ? "2222" : "3333"}`;
+}
+
+async function caseOfAdvisory(id: number, advisory: string, result: Outcome): Promise<Outcome> {
+  const [found] = (await db.prepare("SELECT id FROM security_cases WHERE project_id=? AND advisory_ghsa=? AND reporter_github_id=?").bind(project, advisory, githubId(1)).all()).results;
+  if (result === "accepted" && typeof found?.id === "string") cases.set(id, found.id);
+  return result;
+}
+
+// The reporter claims a GitHub advisory as their report (case mode "claim").
+async function claim(id: number, by: unknown): Promise<Outcome> {
+  if (cases.has(id) || (id !== 1 && id !== 2) || Number(by ?? 0) !== 1) return "refused";
+  const advisory = advisoryOf(id, "claim");
+  return caseOfAdvisory(id, advisory, await outcome(claimed(actorOf(by), { mode: "claim", projectId: project, advisory, idempotencyKey: key() })));
+}
+
+function receivedAtOf(receipt: ReceiptTerms) {
+  clock.set(Math.max(clock.now(), base() + receipt.receivedAt + 1));
+  atReceiptTerms = receipt;
+  return at(receipt.receivedAt);
+}
+
+// A current technical approver records a GitHub advisory's case directly (case mode "record") at an attested past
+// receipt time, under the terms in force then.
+async function record(id: number, event: Extract<Event, { type: "recordAttested" }>, by: unknown): Promise<Outcome> {
+  if (cases.has(id) || (id !== 1 && id !== 2)) return "refused";
+  const advisory = advisoryOf(id, "record");
+  const receivedAt = receivedAtOf(event.terms);
+  return caseOfAdvisory(id, advisory, await outcome(recorded(actorOf(by), {
+    mode: "record", projectId: project, advisory, idempotencyKey: key(), reporterGithubId: githubId(1), reporterGithubLogin: `member-${githubId(1)}`,
+    receivedAt, confirmation: event.confirmed,
+  })));
+}
+
+// Only the GitHub receipt service settles a claim: the claim's reporter asks for the check (check-receipt), and
+// GitHub's complete private-report list answers, holding the claimant's report of the advisory or not.
+async function settleClaim(id: number, event: Extract<Event, { type: "settleClaim" }>, by: unknown): Promise<Outcome> {
+  const caseId = cases.get(id);
+  if (caseId === undefined || Number(by) !== -1) return "refused";
+  const row = (await runtime.runPromise(caseRecord(caseId)))?.row;
+  if (row === undefined) return "refused";
+  const createdAt = event.listed ? receivedAtOf(event.terms) : at(event.terms.receivedAt);
+  advisories = event.listed && row.advisory_ghsa !== null ? [{
+    ghsa_id: row.advisory_ghsa,
+    html_url: `https://github.com/${repository}/security/advisories/${row.advisory_ghsa}`,
+    created_at: createdAt,
+    state: "triage",
+    submission: { accepted: false },
+    author: { id: Number(row.reporter_github_id), login: row.reporter_github_login, type: "User" },
+    description: "A reported finding.",
+  }] : [];
+  return act(id, 1, "check-receipt");
+}
+
 async function act(id: number, by: unknown, action: string, fields: Readonly<Record<string, unknown>> = {}): Promise<Outcome> {
   const caseId = cases.get(id);
   if (caseId === undefined) return "refused";
@@ -193,7 +274,7 @@ async function send(event: Event, by: unknown): Promise<Outcome> {
     case "advanceClock": {
       if (event.nowMs <= clockMs) return "refused";
       clockMs = event.nowMs;
-      clock.set(base() + event.nowMs);
+      clock.set(Math.max(clock.now(), base() + event.nowMs));
       return "accepted";
     }
     case "observeFunds": {
@@ -212,6 +293,9 @@ async function send(event: Event, by: unknown): Promise<Outcome> {
       return "accepted";
     }
     case "receive": return receive(event.id, event);
+    case "claim": return claim(event.id, by);
+    case "recordAttested": return event.checkedEpoch === snapshot.epoch ? record(event.id, event, by) : "refused";
+    case "settleClaim": return settleClaim(event.id, event, by);
     case "settleVaultHold": return settle(event.id, event.receipt);
     case "appeal": return act(event.id, by, "appeal", { reason: "The decision overlooks the attached evidence." });
     default: break;
@@ -229,6 +313,11 @@ async function send(event: Event, by: unknown): Promise<Outcome> {
         ...(decision.duplicateOf > 0 && original !== undefined ? { duplicateOf: original } : {}),
       });
     }
+    case "verifyLink": {
+      const receivedAt = receivedAtOf(event.terms);
+      return act(event.id, by, "verify-link", { receivedAt, confirmation: true });
+    }
+    case "rejectLink": return act(event.id, by, "reject-link", { reason: "The advisory names another account." });
     case "declineAward": return act(event.id, by, "award", { decision: "none", reason: "No award under these terms." });
     case "decideAward": return act(event.id, by, "award", { decision: "amount", reason: "Conformance award.", grossMinor: minor(event.amount), paymentDeadline: at(span), confirmation: true });
     case "reviewRelated": return act(event.id, by, "decide-related-party", { outcome: event.approve ? "approve" : "refuse", reason: "Independent review." });
@@ -279,6 +368,8 @@ export const driver: Driver<ReturnType<typeof shape>> & AsyncDisposable = {
     funds = { view: undefined, finalized: false, observedAt: 0 };
     route = { direct: undefined, observedAt: 0 };
     cases.clear();
+    atReceiptTerms = undefined;
+    advisories = [];
     clock.set(base() + clockMs);
   },
   dispatch: (_key, event, by) => send(event, by),

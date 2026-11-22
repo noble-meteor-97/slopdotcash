@@ -70,8 +70,8 @@ function translated(key: string, event: Event): Event {
   return event.type === "decode" ? { ...event, body: mapped(key, event.body) } : event;
 }
 
-function contextOf(key: string, event: Event): Context {
-  const request = "requestId" in event ? requestOf(key, event.requestId) : undefined;
+function contextOf(key: string, requestId: number | undefined): Context {
+  const request = requestId === undefined ? undefined : requestOf(key, requestId);
   const body = request?.body;
   return {
     deliveryId: deliveryOf(key),
@@ -108,10 +108,10 @@ export const driver: Driver<Observed> & AsyncDisposable = {
   },
   dispatch: async (key, event: Event) => {
     const sent = translated(key, event);
-    const advanced = advance(contextOf(key, sent), inFlight.get(key) ?? [], sent).pipe(Effect.tap((next) => Effect.sync(() => inFlight.set(key, next.requests))));
+    const advanced = advance(contextOf(key, "requestId" in sent ? sent.requestId : undefined), inFlight.get(key) ?? [], sent).pipe(Effect.tap((next) => Effect.sync(() => inFlight.set(key, next.requests))));
     return outcome(advanced, runtime);
   },
-  observe: async (key) => view(await runtime.runPromise(delivery(contextOf(key, { type: "releaseOrdinary" })))),
+  observe: async (key) => view(await runtime.runPromise(delivery(contextOf(key, undefined)))),
   [Symbol.asyncDispose]: async () => {
     await runtime.dispose();
     await mf.dispose();

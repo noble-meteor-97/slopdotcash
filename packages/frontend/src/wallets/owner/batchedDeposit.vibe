@@ -86,7 +86,7 @@ export effect function batchFlow(storage: SlotStorage | undefined, key: string) 
   return {
     machine,
     review: effect (owner: number, review: TransferReview) => {
-      try sent({ type: "review", owner, capability: capabilityOf(review) }, owner)
+      try sent({ type: "review", capability: capabilityOf(review) }, owner)
       return try machine.get()
     },
     send: effect (connection: EvmConnection, vault: EvmVault, amount: string, evidence: Evidence) => {

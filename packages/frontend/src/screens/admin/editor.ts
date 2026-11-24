@@ -159,7 +159,7 @@ export function skillBound(field: ContributionField): { readonly short: string; 
   return field === "approvedScope" ? { short: "6–2000 characters", full: "6 to 2000 characters" } : { short: "Up to 2000 characters", full: "Up to 2000 characters" };
 }
 
-/** The next manifest: the advanced settings with the status, contribution fields and generated skill templates, and the chosen reward asset of a monthly pool. @throws {never} */
+/** The next manifest: the advanced settings with the status, contribution fields and generated skill templates, and the chosen reward asset of a monthly pool; with no asset chosen the stored reward asset stays. @throws {never} */
 export function builtManifest(project: AdminProject, draft: ManifestDraft): Built {
   const fields = projectFieldsOf(draft.text);
   if (fields === undefined) return { kind: "invalid", message: editorMessages.notObject };
@@ -192,7 +192,9 @@ export function builtManifest(project: AdminProject, draft: ManifestDraft): Buil
             ...(isRecord(rest.escrow) ? { escrow: { ...rest.escrow, chain: asset.network } } : {}),
             rewardAsset: unchanged ? project.raw.rewardAsset : asset,
           }
-        : {}),
+        : !draft.assetSelected && project.raw.rewardAsset !== undefined
+          ? { rewardAsset: project.raw.rewardAsset }
+          : {}),
     },
   };
 }
